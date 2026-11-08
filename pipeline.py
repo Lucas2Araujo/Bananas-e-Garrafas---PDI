@@ -4,25 +4,28 @@ from pathlib import Path
 from skimage.feature import graycomatrix, graycoprops
 from ultralytics import YOLO
 
+import config
+
 class HybridPDIPipeline:
-    def __init__(self, yolo_weights="yolo11n.pt", use_yolo=True, skip_frames=3, imgsz=320, device="intel:gpu"):
+    def __init__(self, yolo_weights=None, use_yolo=True, skip_frames=3, imgsz=320, device="intel:gpu", min_contour_area=1500):
         self.use_yolo = use_yolo
         self.skip_frames = max(1, skip_frames)
         self.imgsz = imgsz
         self.device = device
+        self.min_contour_area = min_contour_area
         self.frame_count = 0
         self.last_bbox = None
         self.last_source = None
+        self.last_contour_area = 0.0
+        self.last_is_valid = False
         
         # Classes COCO: 39 = bottle (garrafa), 46 = banana
         self.target_classes = [39, 46]
 
         if self.use_yolo:
-            # Prioriza modelo exportado OpenVINO se existir na pasta do projeto
-            ov_dir = Path("yolo11n_openvino_model")
-            weights_to_load = str(ov_dir) if ov_dir.is_dir() else yolo_weights
-            self.detector = YOLO(weights_to_load)
-            self.is_openvino = ov_dir.is_dir() or "openvino" in str(weights_to_load).lower()
+            weights_to_load = yolo_weights or getattr(config, "YOLO_MODEL_PATH", "yolo26n.pt")
+            self.detector = YOLO(str(weights_to_load))
+            self.is_openvino = "openvino" in str(weights_to_load).lower()
         else:
             self.detector = None
             self.is_openvino = False
@@ -132,18 +135,27 @@ class HybridPDIPipeline:
             area = cv2.contourArea(largest_cnt)
             perimeter = cv2.arcLength(largest_cnt, True)
             circularity = (4 * np.pi * area) / (perimeter ** 2) if perimeter > 0 else 0.0
+            
+            # Razão de aspecto invariante a rotação via minAreaRect (independe de estar vertical ou horizontal)
+            rect = cv2.minAreaRect(largest_cnt)
+            dim1, dim2 = rect[1]
+            minor_axis = min(dim1, dim2)
+            major_axis = max(dim1, dim2)
+            aspect_ratio = minor_axis / max(major_axis, 1e-5)
         else:
-            solid_mask = closed
+            solid_mask = np.zeros_like(closed)
+            area = 0.0
             circularity = 0.0
+            aspect_ratio = 1.0
+
+        self.last_contour_area = area
+        self.last_is_valid = bool(area >= self.min_contour_area)
 
         # --- EXTRAÇÃO DE ATRIBUTOS (19 FEATURES) ---
-        # A) FORMA (9 features): 7 Momentos de Hu + Circularidade + Razão de Aspecto
+        # A) FORMA (9 features): 7 Momentos de Hu + Circularidade + Razão de Aspecto Invariante
         moments = cv2.moments(solid_mask)
         hu_moments = cv2.HuMoments(moments).flatten()
         hu_log = [-np.sign(m) * np.log10(abs(m)) if m != 0 else 0.0 for m in hu_moments]
-        
-        h_roi, w_roi = roi_norm.shape[:2]
-        aspect_ratio = float(w_roi) / float(h_roi)
         shape_features = hu_log + [circularity, aspect_ratio]
 
         # B) TEXTURA - GLCM (4 features)
@@ -170,4 +182,9 @@ class HybridPDIPipeline:
             "morph_closed": closed,
             "solid_mask": solid_mask
         }
+
+        # Validação de objeto real: se a área for inferior ao mínimo, descarta vetor para evitar falsos positivos
+        if not self.last_is_valid:
+            return None, debug_views
+
         return feature_vector, debug_views

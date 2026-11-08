@@ -9,25 +9,46 @@ from pathlib import Path
 
 def scan_available_cameras(max_index=5):
     """
-    Testa portas de vídeo locais de 0 até max_index.
-    Verifica abertura e leitura de frame real para ignorar loopbacks virtuais (como OBS em /dev/video0).
+    Retorna lista de tuplas (indice, nome_amigavel).
+    No Linux, usa /sys/class/video4linux para detecção instantânea sem travar em buffers de loopback.
     """
-    available = []
-    backend = cv2.CAP_V4L2 if hasattr(cv2, "CAP_V4L2") and os.name != "nt" else cv2.CAP_ANY
-    for idx in range(max_index + 1):
-        cap = cv2.VideoCapture(idx, backend)
-        if not cap.isOpened() and backend != cv2.CAP_ANY:
-            cap = cv2.VideoCapture(idx)
-        if cap.isOpened():
-            ret, frame = cap.read()
-            if ret and frame is not None:
-                available.append(idx)
-            cap.release()
-    return available
+    cameras = []
+    if os.name != "nt" and os.path.isdir("/sys/class/video4linux"):
+        import glob
+        for dev_path in sorted(glob.glob("/sys/class/video4linux/video*")):
+            try:
+                base = os.path.basename(dev_path)
+                idx = int(base.replace("video", ""))
+                name_file = os.path.join(dev_path, "name")
+                name = open(name_file).read().strip() if os.path.exists(name_file) else f"Camera {idx}"
+                cameras.append((idx, f"video{idx}: {name}"))
+            except Exception:
+                pass
+    if not cameras:
+        backend = cv2.CAP_V4L2 if hasattr(cv2, "CAP_V4L2") and os.name != "nt" else cv2.CAP_ANY
+        for idx in range(max_index + 1):
+            cap = cv2.VideoCapture(idx, backend)
+            if cap.isOpened():
+                cameras.append((idx, f"Camera {idx}"))
+                cap.release()
+    return cameras
+
+def get_default_camera_index():
+    cams = scan_available_cameras()
+    if not cams:
+        return 0
+    # Prioriza câmeras reais (evita Virtual Camera e Dummy se houver webcam física)
+    for idx, name in cams:
+        name_lower = name.lower()
+        if "virtual" not in name_lower and "dummy" not in name_lower and "obs" not in name_lower:
+            return idx
+    return cams[0][0]
 
 # --- FONTE DE VÍDEO ---
-_cams = scan_available_cameras(max_index=5)
-CAMERA_SOURCE = _cams[0] if _cams else 0
+CAMERA_SOURCE = get_default_camera_index()
+
+# --- MODELO YOLO (YOLO 26n) ---
+YOLO_MODEL_PATH = "yolo26n.pt"
 
 # --- ACELERAÇÃO YOLO / OPENVINO / FRAME SKIPPING ---
 # intel:gpu usa a Intel Iris Xe Graphics integrada; fallback automático para CPU
