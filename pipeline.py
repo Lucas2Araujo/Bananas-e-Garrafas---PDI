@@ -30,11 +30,11 @@ class HybridPDIPipeline:
             self.detector = None
             self.is_openvino = False
 
-    def extract_roi(self, frame, force_infer=False):
+    def extract_roi(self, frame, force_infer=False, allow_fallback=True):
         """
         1. LOCALIZAÇÃO: Tenta isolar o objeto via YOLO com suporte a Frame Skipping.
         Se force_infer=False, infere a cada self.skip_frames e reutiliza a última caixa nos frames intermediários.
-        Se falhar (Falso Negativo), aplica Fallback de Center Crop (70% central da caixa).
+        Se falhar e allow_fallback=True, aplica Fallback de Center Crop (70% central da imagem).
         """
         h_img, w_img = frame.shape[:2]
         
@@ -85,6 +85,12 @@ class HybridPDIPipeline:
                 x1, y1, x2, y2 = self.last_bbox
                 return frame[y1:y2, x1:x2], self.last_bbox, "YOLO"
 
+        # Se não detectou e fallback não for permitido, não força processamento
+        if not allow_fallback:
+            self.last_bbox = None
+            self.last_source = None
+            return None, (0, 0, 0, 0), "NONE"
+
         # FALLBACK: Recorte central (70% da imagem) caso o YOLO falhe ou esteja desligado
         self.last_bbox = None
         margin_x = int(w_img * 0.15)
@@ -102,7 +108,7 @@ class HybridPDIPipeline:
     def segment_and_extract(self, roi):
         """
         2. PDI CLÁSSICO: Pré-processamento, Otsu Duplo (V + S), Morfologia Matemática e Features.
-        Retorna o vetor 1D de características (19 features) e as imagens intermediárias para debug.
+        Retorna o vetor 1D de características (20 features) e as imagens intermediárias para debug.
         """
         roi_norm = self.resize_keep_aspect(roi, max_dim=256)
         
@@ -114,6 +120,13 @@ class HybridPDIPipeline:
         # Limiarização de Otsu combinada (Canal V para brilho/reflexo + Canal S para saturação/rótulo)
         _, thresh_v = cv2.threshold(v_chan, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         _, thresh_s = cv2.threshold(s_chan, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        # Inversão automática se a borda externa for clara (fundo iluminado)
+        border_mask = np.zeros_like(thresh_v, dtype=bool)
+        border_mask[:2, :] = border_mask[-2:, :] = border_mask[:, :2] = border_mask[:, -2:] = True
+        if np.mean(thresh_v[border_mask] == 255) > 0.50:
+            thresh_v = cv2.bitwise_not(thresh_v)
+
         otsu_combined = cv2.bitwise_or(thresh_v, thresh_s)
 
         # --- MORFOLOGIA MATEMÁTICA ---
@@ -142,26 +155,34 @@ class HybridPDIPipeline:
             minor_axis = min(dim1, dim2)
             major_axis = max(dim1, dim2)
             aspect_ratio = minor_axis / max(major_axis, 1e-5)
+
+            # Solidez via Fecho Convexo (Convex Hull): diferencia corpos compactos/garrafas de cascas abertas/fatias
+            hull = cv2.convexHull(largest_cnt)
+            hull_area = cv2.contourArea(hull)
+            solidity = float(area) / max(hull_area, 1e-5)
         else:
             solid_mask = np.zeros_like(closed)
             area = 0.0
             circularity = 0.0
             aspect_ratio = 1.0
+            solidity = 0.0
 
         self.last_contour_area = area
         self.last_is_valid = bool(area >= self.min_contour_area)
 
-        # --- EXTRAÇÃO DE ATRIBUTOS (19 FEATURES) ---
-        # A) FORMA (9 features): 7 Momentos de Hu + Circularidade + Razão de Aspecto Invariante
+        # --- EXTRAÇÃO DE ATRIBUTOS (20 FEATURES) ---
+        # A) FORMA (10 features): 7 Momentos de Hu + Circularidade + Razão de Aspecto Invariante + Solidez
         moments = cv2.moments(solid_mask)
         hu_moments = cv2.HuMoments(moments).flatten()
         hu_log = [-np.sign(m) * np.log10(abs(m)) if m != 0 else 0.0 for m in hu_moments]
-        shape_features = hu_log + [circularity, aspect_ratio]
+        shape_features = hu_log + [circularity, aspect_ratio, solidity]
 
-        # B) TEXTURA - GLCM (4 features)
+        # B) TEXTURA - GLCM (4 features em 4 ângulos: 0°, 45°, 90°, 135° restrito ao objeto)
         gray = cv2.cvtColor(blurred, cv2.COLOR_BGR2GRAY)
+        if np.any(solid_mask):
+            gray = cv2.bitwise_and(gray, gray, mask=solid_mask)
         gray_quant = (gray // 8).astype(np.uint8)
-        glcm = graycomatrix(gray_quant, distances=[1, 3], angles=[0, np.pi/4, np.pi/2], 
+        glcm = graycomatrix(gray_quant, distances=[1, 3], angles=[0, np.pi/4, np.pi/2, 3*np.pi/4], 
                             levels=32, symmetric=True, normed=True)
         texture_features = [
             float(graycoprops(glcm, 'contrast').mean()),
@@ -174,13 +195,32 @@ class HybridPDIPipeline:
         mean_hsv, std_hsv = cv2.meanStdDev(hsv, mask=solid_mask if np.any(solid_mask) else None)
         color_features = mean_hsv.flatten().tolist() + std_hsv.flatten().tolist()
 
+        h_mean, s_mean, v_mean = mean_hsv.flatten()[:3]
+        # Validação de assinatura HSV de banana ou garrafa PET no fallback
+        is_banana = (12.0 <= h_mean <= 50.0 and s_mean >= 40.0 and v_mean >= 35.0) or (s_mean >= 30.0 and 20.0 <= v_mean <= 95.0 and 10.0 <= h_mean <= 45.0)
+        is_bottle = (s_mean <= 85.0 and v_mean >= 40.0) or (35.0 <= h_mean <= 110.0 and v_mean >= 35.0)
+        self.last_color_valid = bool((is_banana or is_bottle) and v_mean >= 25.0)
+
         feature_vector = np.array(shape_features + texture_features + color_features, dtype=np.float32)
+
+        # HUD didático na visualização da máscara sólida
+        solid_mask_vis = cv2.cvtColor(solid_mask, cv2.COLOR_GRAY2BGR)
+        if contours:
+            cv2.drawContours(solid_mask_vis, [hull], -1, (0, 255, 0), 2)
+            box_pts = cv2.boxPoints(rect).astype(np.int32)
+            cv2.drawContours(solid_mask_vis, [box_pts], -1, (255, 200, 0), 2)
+            hud1 = f"Area: {int(area)} | Solidez: {solidity:.2f}"
+            hud2 = f"Circ: {circularity:.2f} | Aspecto: {aspect_ratio:.2f}"
+            cv2.putText(solid_mask_vis, hud1, (6, solid_mask_vis.shape[0] - 22),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(solid_mask_vis, hud2, (6, solid_mask_vis.shape[0] - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 255, 255), 1, cv2.LINE_AA)
 
         debug_views = {
             "roi_norm": roi_norm,
             "otsu_raw": otsu_combined,
             "morph_closed": closed,
-            "solid_mask": solid_mask
+            "solid_mask": solid_mask_vis
         }
 
         # Validação de objeto real: se a área for inferior ao mínimo, descarta vetor para evitar falsos positivos

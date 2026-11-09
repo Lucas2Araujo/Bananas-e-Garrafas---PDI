@@ -9,10 +9,11 @@ import time
 import joblib
 import threading
 import numpy as np
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
+from tkinter import ttk, scrolledtext, messagebox, filedialog
 
 import config
 from pipeline import HybridPDIPipeline
@@ -106,6 +107,7 @@ class PDIApplication:
         # Gerenciamento de Câmera (Inicia DESCONECTADA)
         self.cam_thread = None
         self.is_camera_connected = False
+        self.is_static_mode = False
         self.camera_sources = []
         self.latest_frame = None
         self.frame_lock = threading.Lock()
@@ -115,6 +117,7 @@ class PDIApplication:
         self.fps = 0.0
         self.last_pred_label = None
         self.last_pred_prob = 0.0
+        self.prob_history = deque(maxlen=4)
         self.status_msg = "Aguardando conexão da câmera"
         self.status_expiry = 0.0
 
@@ -128,6 +131,16 @@ class PDIApplication:
         }
         self.win_vars = {}
         self.win_created = set()
+
+        # Resoluções configuráveis para a janela de vídeo
+        self.WINDOW_SIZES = {
+            "800x450 (Recomendado Notebook)": (800, 450),
+            "640x360 (Compacto)": (640, 360),
+            "960x540 (Médio)": (960, 540),
+            "1280x720 (HD)": (1280, 720),
+            "Nativo (Resolução da Câmera)": None
+        }
+        self.window_size_var = tk.StringVar(value="800x450 (Recomendado Notebook)")
 
         # Monta Interface
         self.setup_ui()
@@ -195,7 +208,10 @@ class PDIApplication:
         self.btn_connect = tk.Button(act_row, text="▶ Conectar Câmera", bg="#28a745", fg="white",
                                      font=("Sans", 9, "bold"), relief="raised", padx=12, pady=4,
                                      command=self.toggle_camera_connection)
-        self.btn_connect.pack(side=tk.LEFT, padx=(0, 10))
+        self.btn_connect.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.btn_static = ttk.Button(act_row, text="📂 Testar Imagem", command=self.load_static_image)
+        self.btn_static.pack(side=tk.LEFT, padx=(0, 10))
 
         self.lbl_cam_status = ttk.Label(act_row, text="Câmera: DESCONECTADA (clique em Conectar)",
                                         font=("Sans", 9, "bold"), foreground="#d9534f")
@@ -208,7 +224,16 @@ class PDIApplication:
         self.win_vars["main"] = tk.BooleanVar(value=True)
         cb_main = ttk.Checkbutton(win_frame, text="🖥  Janela Principal (Câmera + YOLO26n + Diagnóstico)",
                                   variable=self.win_vars["main"], command=lambda: self.on_toggle_window("main"))
-        cb_main.pack(anchor="w", pady=(0, 4))
+        cb_main.pack(anchor="w", pady=(0, 2))
+
+        # Seletor de Resolução / Tamanho da Janela de Vídeo
+        res_row = ttk.Frame(win_frame)
+        res_row.pack(fill=tk.X, pady=(2, 6))
+        ttk.Label(res_row, text="📐 Tamanho da Janela de Vídeo:").pack(side=tk.LEFT, padx=(0, 6))
+        combo_res = ttk.Combobox(res_row, textvariable=self.window_size_var,
+                                 values=list(self.WINDOW_SIZES.keys()), state="readonly", width=28)
+        combo_res.pack(side=tk.LEFT)
+        combo_res.bind("<<ComboboxSelected>>", self.on_window_size_changed)
 
         sep = ttk.Separator(win_frame, orient="horizontal")
         sep.pack(fill=tk.X, pady=4)
@@ -273,12 +298,7 @@ class PDIApplication:
         tr_row = ttk.Frame(train_frame)
         tr_row.pack(fill=tk.X)
 
-        ttk.Label(tr_row, text="Algoritmo:").pack(side=tk.LEFT, padx=(0, 6))
-        self.var_model_type = tk.StringVar(value=config.MODEL_TYPE)
-        rb_svm = ttk.Radiobutton(tr_row, text="SVM (RBF)", variable=self.var_model_type, value="SVM")
-        rb_svm.pack(side=tk.LEFT, padx=(0, 8))
-        rb_knn = ttk.Radiobutton(tr_row, text="KNN (k=5)", variable=self.var_model_type, value="KNN")
-        rb_knn.pack(side=tk.LEFT, padx=(0, 12))
+        ttk.Label(tr_row, text="Modelo: SVM RBF (20 Features PDI)", font=("Sans", 9, "bold")).pack(side=tk.LEFT, padx=(0, 10))
 
         self.btn_train = tk.Button(tr_row, text="🚀 Treinar Modelo Agora [Tecla T]", bg="#fff3cd", fg="#856404",
                                    font=("Sans", 9, "bold"), relief="raised", padx=10, pady=4,
@@ -335,6 +355,7 @@ class PDIApplication:
             self.connect_camera()
 
     def connect_camera(self):
+        self.is_static_mode = False
         if self.source_mode.get() == "local":
             sel_idx = self.cam_combo.current()
             if sel_idx < 0 or sel_idx >= len(self.camera_sources):
@@ -378,8 +399,29 @@ class PDIApplication:
                 self.btn_connect.config(state="normal", text="▶ Conectar Câmera", bg="#28a745")
         self.root.after(1200, _verify)
 
+    def load_static_image(self):
+        filepath = filedialog.askopenfilename(
+            initialdir=str(config.BASE_DIR),
+            title="Selecione uma imagem para teste PDI",
+            filetypes=[("Imagens", "*.jpg *.jpeg *.png *.bmp *.webp")]
+        )
+        if not filepath:
+            return
+        img = cv2.imread(filepath)
+        if img is None:
+            messagebox.showerror("Erro", "Não foi possível abrir a imagem selecionada.")
+            return
+        if self.is_camera_connected:
+            self.disconnect_camera()
+        with self.frame_lock:
+            self.latest_frame = img
+        self.is_static_mode = True
+        self.lbl_cam_status.config(text=f"Modo Estático: {Path(filepath).name}", foreground="#0275d8")
+        self.log(f"[*] Imagem estática carregada: {Path(filepath).name}")
+
     def disconnect_camera(self):
         self.is_camera_connected = False
+        self.is_static_mode = False
         if self.cam_thread is not None:
             self.cam_thread.stop()
             self.cam_thread = None
@@ -411,6 +453,16 @@ class PDIApplication:
             if win_key in self.win_created:
                 self.win_created.remove(win_key)
 
+    def on_window_size_changed(self, event=None):
+        target = self.WINDOW_SIZES.get(self.window_size_var.get())
+        main_title = self.window_defs["main"]["title"]
+        if "main" in self.win_created and target is not None:
+            try:
+                cv2.resizeWindow(main_title, target[0], target[1])
+            except Exception:
+                pass
+        self.log(f"[*] Resolução da janela ajustada para: {self.window_size_var.get()}")
+
     def on_toggle_yolo(self):
         self.pdi_pipeline.use_yolo = self.var_use_yolo.get()
         state = "ATIVADO" if self.pdi_pipeline.use_yolo else "DESATIVADO"
@@ -440,12 +492,11 @@ class PDIApplication:
 
     def start_training_thread(self):
         self.btn_train.config(state="disabled", text="⏳ Treinando...")
-        m_type = self.var_model_type.get()
-        self.log(f"\n[*] Iniciando processo de treinamento ({m_type})...")
+        self.log("\n[*] Iniciando processo de treinamento (SVM RBF)...")
 
         def _worker():
             try:
-                trained = train_model.train(model_type=m_type, log_fn=self.log)
+                trained = train_model.train(log_fn=self.log)
                 if trained is not None:
                     self.clf_model = trained
                     self.log("[✔] Novo classificador recarregado dinamicamente na memória!")
@@ -502,22 +553,25 @@ class PDIApplication:
             if self.latest_frame is not None:
                 frame = self.latest_frame.copy()
 
-        if frame is not None and self.is_camera_connected:
+        is_active = self.is_camera_connected or self.is_static_mode
+        if frame is not None and is_active:
             curr_time = time.time()
             self.fps = 0.9 * self.fps + 0.1 * (1.0 / max(curr_time - self.prev_time, 1e-6))
             self.prev_time = curr_time
 
             self.process_and_render_frame(frame)
         else:
-            # Se a câmera estiver desconectada, garante janelas fechadas
-            if not self.is_camera_connected and self.win_created:
+            # Se não houver fonte ativa, garante janelas fechadas
+            if not is_active and self.win_created:
                 self.close_all_opencv_windows()
 
         self.root.after(15, self.render_loop)
 
     def process_and_render_frame(self, frame):
-        # 1. Localização via YOLO ou Fallback Central
-        roi, bbox, source_str = self.pdi_pipeline.extract_roi(frame)
+        # 1. Localização via YOLO ou Fallback Central (respeita checkbox)
+        roi, bbox, source_str = self.pdi_pipeline.extract_roi(
+            frame, allow_fallback=self.var_allow_fallback.get()
+        )
         x1, y1, x2, y2 = bbox
 
         features, debug_views = None, None
@@ -529,25 +583,40 @@ class PDIApplication:
             
             # Validação anti-falso positivo: se a máscara for insignificante, considera vazio
             if features is None:
+                self.prob_history.clear()
                 status_category = "Lixeira Vazia (Área insuficiente)"
             else:
                 if self.clf_model is not None:
-                    try:
-                        probs = self.clf_model.predict_proba([features])[0]
-                        best_idx = int(np.argmax(probs))
-                        confidence = float(probs[best_idx])
-                        if confidence >= 0.65:
-                            pred_label = best_idx
-                            pred_prob = confidence
-                            status_category = f"{config.CLASS_NAMES[pred_label]} ({pred_prob * 100:.1f}%)"
-                        else:
-                            status_category = f"Incerto ({confidence * 100:.1f}%)"
-                    except Exception:
-                        pred_label = int(self.clf_model.predict([features])[0])
-                        pred_prob = 1.0
-                        status_category = f"{config.CLASS_NAMES[pred_label]}"
+                    # Se for Fallback, verifica se a cor bate com o escopo de banana/garrafa
+                    if source_str == "FALLBACK_CENTER" and not getattr(self.pdi_pipeline, "last_color_valid", True):
+                        self.prob_history.clear()
+                        pred_label = 2  # Indefinido
+                        pred_prob = 0.0
+                        status_category = "Indefinido (Cor fora do escopo)"
+                    else:
+                        try:
+                            raw_probs = self.clf_model.predict_proba([features])[0]
+                            self.prob_history.append(raw_probs)
+                            probs = np.mean(self.prob_history, axis=0)
+                            best_idx = int(np.argmax(probs))
+                            confidence = float(probs[best_idx])
+                            # Limiar de certeza estrito (70%) para validar classe alvo
+                            if confidence >= 0.70:
+                                pred_label = best_idx
+                                pred_prob = confidence
+                                status_category = f"{config.CLASS_NAMES[pred_label]} ({pred_prob * 100:.1f}%)"
+                            else:
+                                pred_label = 2  # Indefinido
+                                pred_prob = confidence
+                                status_category = f"Indefinido (Confiança baixa: {confidence * 100:.1f}%)"
+                        except Exception:
+                            pred_label = int(self.clf_model.predict([features])[0])
+                            pred_prob = 1.0
+                            status_category = f"{config.CLASS_NAMES[pred_label]}"
                 else:
                     status_category = "Objeto Detectado (Aguardando Treino)"
+        else:
+            self.prob_history.clear()
 
         self.last_pred_label = pred_label
         self.last_pred_prob = pred_prob
@@ -557,13 +626,15 @@ class PDIApplication:
             main_title = self.window_defs["main"]["title"]
             main_view = frame.copy()
 
-            # Cor da Bounding Box: verde se achou classe, laranja se fallback, cinza se vazio
-            if pred_label is not None:
-                box_color = (0, 255, 0) if pred_label == 0 else (255, 200, 0)
-            elif features is not None:
+            # Cor da Bounding Box: verde se banana, azul se garrafa, cinza/laranja se indefinido
+            if pred_label == 0:
+                box_color = (0, 255, 0)
+            elif pred_label == 1:
+                box_color = (255, 200, 0)
+            elif pred_label == 2:
                 box_color = (0, 140, 255)
             else:
-                box_color = (100, 100, 100)
+                box_color = (120, 120, 120)
 
             # Desenha ROI
             cv2.rectangle(main_view, (x1, y1), (x2, y2), box_color, 2)
@@ -581,8 +652,20 @@ class PDIApplication:
                 cv2.putText(main_view, self.status_msg, (15, 68),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA)
 
-            cv2.imshow(main_title, main_view)
-            self.win_created.add("main")
+            # Redimensionamento inteligente conforme tamanho configurado
+            target_res = self.WINDOW_SIZES.get(self.window_size_var.get())
+            if target_res is not None:
+                display_view = cv2.resize(main_view, target_res, interpolation=cv2.INTER_AREA)
+            else:
+                display_view = main_view
+
+            if "main" not in self.win_created:
+                cv2.namedWindow(main_title, cv2.WINDOW_NORMAL)
+                if target_res is not None:
+                    cv2.resizeWindow(main_title, target_res[0], target_res[1])
+                self.win_created.add("main")
+
+            cv2.imshow(main_title, display_view)
             self.check_x11_window_closed("main", main_title)
 
         # 3. Janelas Individuais dos Filtros

@@ -76,6 +76,6 @@ SERIAL_PORT = "/dev/ttyUSB0"  # No Windows altere para "COM3", "COM4", etc.
 BAUD_RATE = 115200
 
 # --- CLASSIFICADOR CLÁSSICO ---
-MODEL_TYPE = "SVM"  # Opções: "SVM" ou "KNN"
-CLASS_NAMES = {0: "Organico (Banana)", 1: "Reciclavel (Garrafa)"}
-SERIAL_CODES = {0: b"O", 1: b"R"}
+MODEL_TYPE = "SVM"  # Classificador Supervisionado SVM (RBF + StandardScaler)
+CLASS_NAMES = {0: "Organico (Banana)", 1: "Reciclavel (Garrafa)", 2: "Indefinido"}
+SERIAL_CODES = {0: b"O", 1: b"R", 2: b"I"}

@@ -27,14 +27,16 @@ def populate_initial_dataset(samples_per_query=30):
     org_dir.mkdir(parents=True, exist_ok=True)
     rec_dir.mkdir(parents=True, exist_ok=True)
 
-    # Buscas em estúdio / fundo escuro isolado com múltiplas orientações (vertical e horizontal)
+    # Buscas em estúdio / fundo escuro isolado com múltiplas orientações, cores e deformações
     queries_organico = [
         "single yellow banana on black background",
         "vertical banana fruit black background",
         "hanging banana isolated black background",
         "ripe banana horizontal black background",
         "banana peel on black background",
-        "single banana plain dark background studio"
+        "single banana plain dark background studio",
+        "brown banana peel on black background",
+        "old oxidized banana peel dark background"
     ]
     
     queries_reciclavel = [
@@ -43,7 +45,9 @@ def populate_initial_dataset(samples_per_query=30):
         "empty transparent pet bottle black background",
         "crushed plastic bottle isolated black background",
         "vertical water bottle black background studio",
-        "plastic water bottle lying flat dark background"
+        "plastic water bottle lying flat dark background",
+        "green plastic bottle on black background",
+        "crushed plastic bottle with label black background"
     ]
 
     print("=" * 65)
