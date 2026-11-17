@@ -1,7 +1,5 @@
 import os
-# Silencia logs ruidosos do backend C++ do OpenCV
 os.environ.setdefault("OPENCV_LOG_LEVEL", "OFF")
-# Garante compatibilidade do OpenCV GUI no Linux Wayland/X11 (evita erro de plugin Qt wayland)
 os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
 import cv2
@@ -27,8 +25,7 @@ except ImportError:
 class CameraThread(threading.Thread):
     """
     Thread dedicada para captura de frames em background.
-    Elimina travamentos da interface ao conectar no DroidCam (IP/WiFi) ou V4L2.
-    Garante latência zero lendo continuamente o buffer mais recente.
+    Elimina travamentos da interface ao conectar no DroidCam (IP/WiFi) ou V4L2 (biblioteca de câmera virtual no linux).
     """
     def __init__(self, source, on_frame_cb, on_error_cb):
         super().__init__(daemon=True)
@@ -40,7 +37,6 @@ class CameraThread(threading.Thread):
 
     def run(self):
         backend = cv2.CAP_ANY
-        # Se for índice numérico e estiver no Linux, usa V4L2
         if isinstance(self.source, int) and hasattr(cv2, "CAP_V4L2") and os.name != "nt":
             backend = cv2.CAP_V4L2
 
@@ -78,7 +74,7 @@ class CameraThread(threading.Thread):
 class PDIApplication:
     def __init__(self, root):
         self.root = root
-        self.root.title("Lixeira Inteligente PDI - Controle (YOLO26n + DroidCam)")
+        self.root.title("Classificador de Lixo - PDI - Controle (YOLO26n")
         self.root.geometry("640x760")
         self.root.minsize(580, 680)
 
@@ -142,13 +138,10 @@ class PDIApplication:
         }
         self.window_size_var = tk.StringVar(value="800x450 (Recomendado Notebook)")
 
-        # Monta Interface
         self.setup_ui()
 
-        # Popula lista de câmeras locais
         self.reload_cameras()
 
-        # Inicia loop de renderização (acoplado ao Tkinter, ~60 FPS)
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.root.after(15, self.render_loop)
 
@@ -168,7 +161,6 @@ class PDIApplication:
         main_frame = ttk.Frame(self.root, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # --- SEÇÃO 1: FONTE DE VÍDEO (DROIDCAM / LOCAL) ---
         cam_frame = ttk.LabelFrame(main_frame, text=" 📹 Conexão da Câmera (Celular / DroidCam / USB) ", padding=8)
         cam_frame.pack(fill=tk.X, pady=(0, 8))
 
@@ -277,12 +269,12 @@ class PDIApplication:
         col_row = ttk.Frame(collect_frame)
         col_row.pack(fill=tk.X)
 
-        self.btn_save_org = tk.Button(col_row, text="🍌 Salvar Orgânico (Banana) [Tecla O]", bg="#d4edda", fg="#155724",
+        self.btn_save_org = tk.Button(col_row, text="Salvar Orgânico (Banana) [Tecla O]", bg="#d4edda", fg="#155724",
                                       font=("Sans", 9, "bold"), relief="raised", padx=8, pady=4,
                                       command=lambda: self.capture_sample(0))
         self.btn_save_org.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
 
-        self.btn_save_rec = tk.Button(col_row, text="🍾 Salvar Reciclável (Garrafa) [Tecla R]", bg="#cce5ff", fg="#004085",
+        self.btn_save_rec = tk.Button(col_row, text="Salvar Reciclável (Garrafa) [Tecla R]", bg="#cce5ff", fg="#004085",
                                       font=("Sans", 9, "bold"), relief="raised", padx=8, pady=4,
                                       command=lambda: self.capture_sample(1))
         self.btn_save_rec.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
@@ -292,15 +284,15 @@ class PDIApplication:
         self.update_dataset_counts()
 
         # --- SEÇÃO 4: TREINAMENTO & GATILHO ---
-        train_frame = ttk.LabelFrame(main_frame, text=" 🧠 Classificador & Teste de Gatilho ", padding=8)
+        train_frame = ttk.LabelFrame(main_frame, text="Classificador & Teste de Gatilho ", padding=8)
         train_frame.pack(fill=tk.X, pady=(0, 8))
 
         tr_row = ttk.Frame(train_frame)
         tr_row.pack(fill=tk.X)
 
-        ttk.Label(tr_row, text="Modelo: SVM RBF (20 Features PDI)", font=("Sans", 9, "bold")).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Label(tr_row, text="Modelo: SVM RBF", font=("Sans", 9, "bold")).pack(side=tk.LEFT, padx=(0, 10))
 
-        self.btn_train = tk.Button(tr_row, text="🚀 Treinar Modelo Agora [Tecla T]", bg="#fff3cd", fg="#856404",
+        self.btn_train = tk.Button(tr_row, text="Treinar Modelo [Tecla T]", bg="#fff3cd", fg="#856404",
                                    font=("Sans", 9, "bold"), relief="raised", padx=10, pady=4,
                                    command=self.start_training_thread)
         self.btn_train.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -323,7 +315,7 @@ class PDIApplication:
         self.root.bind("<space>", lambda e: self.manual_trigger())
 
         self.log("[✔] Painel de Controle carregado com sucesso.")
-        self.log("[*] Dica: Escolha a câmera (USB ou DroidCam WiFi) e clique em 'Conectar Câmera'.")
+        self.log("[*] Dica: Escolha a câmera (USB ou WiFi) e clique em 'Conectar Câmera'.")
 
     def log(self, text):
         def _append():

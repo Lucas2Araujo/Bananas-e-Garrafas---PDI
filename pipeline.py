@@ -19,7 +19,6 @@ class HybridPDIPipeline:
         self.last_contour_area = 0.0
         self.last_is_valid = False
         
-        # Classes COCO: 39 = bottle (garrafa), 46 = banana
         self.target_classes = [39, 46]
 
         if self.use_yolo:
@@ -43,7 +42,6 @@ class HybridPDIPipeline:
             self.frame_count += 1
 
             if should_infer:
-                # Dispara inferência rápida (OpenVINO GPU se disponível, imgsz=320)
                 predict_kwargs = {
                     "classes": self.target_classes,
                     "conf": 0.20,
