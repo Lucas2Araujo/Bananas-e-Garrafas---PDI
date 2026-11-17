@@ -235,6 +235,7 @@ def segmentar_roi(
     gauss_ksize=5,
     usar_mediana=False,
     usar_bilateral=False,
+    inverter_otsu=False,
     label="ROI",
 ):
     """
@@ -280,7 +281,8 @@ def segmentar_roi(
     roi_gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
 
     if metodo == "Otsu":
-        _, mask_roi = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        tipo_otsu = cv2.THRESH_BINARY_INV if inverter_otsu else cv2.THRESH_BINARY
+        _, mask_roi = cv2.threshold(roi_gray, 0, 255, tipo_otsu + cv2.THRESH_OTSU)
     else:
         mask_roi = cv2.adaptiveThreshold(
             roi_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 21, 5

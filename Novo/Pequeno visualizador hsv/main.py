@@ -690,6 +690,7 @@ class AnalisadorCoresApp:
         self.gc_usar_gauss_var = tk.BooleanVar(value=False)
         self.gc_usar_mediana_var = tk.BooleanVar(value=False)
         self.gc_usar_bilateral_var = tk.BooleanVar(value=False)
+        self.gc_inverter_otsu_var = tk.BooleanVar(value=False)
         self.gc_blur_var = tk.IntVar(value=5)
 
         tk.Label(topo, text="YOLO:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=(4, 2))
@@ -712,7 +713,7 @@ class AnalisadorCoresApp:
         combo_gc.pack(side=tk.LEFT, padx=2)
         combo_gc.bind("<<ComboboxSelected>>", lambda _e: self._atualizar_grabcut())
 
-        for txt, var in [("Gauss", self.gc_usar_gauss_var), ("Mediana", self.gc_usar_mediana_var), ("Bilateral", self.gc_usar_bilateral_var)]:
+        for txt, var in [("Gauss", self.gc_usar_gauss_var), ("Mediana", self.gc_usar_mediana_var), ("Bilateral", self.gc_usar_bilateral_var), ("Inv. Otsu", self.gc_inverter_otsu_var)]:
             tk.Checkbutton(
                 topo, text=txt, variable=var, command=self._atualizar_grabcut,
                 font=("Arial", 9, "bold"), cursor="hand2",
@@ -809,10 +810,12 @@ class AnalisadorCoresApp:
         ub = self.gc_usar_bilateral_var.get()
         it = self.gc_iter_var.get()
 
+        inv_otsu = self.gc_inverter_otsu_var.get()
+
         if self.gc_comparar_3_var.get():
-            r_gc = segmentar_roi(self.grabcut_img_bgr, self.grabcut_rect, "GrabCut", it, ug, k, um, ub, self.grabcut_label)
-            r_ot = segmentar_roi(self.grabcut_img_bgr, self.grabcut_rect, "Otsu", it, ug, k, um, ub, self.grabcut_label)
-            r_ad = segmentar_roi(self.grabcut_img_bgr, self.grabcut_rect, "Adaptativa", it, ug, k, um, ub, self.grabcut_label)
+            r_gc = segmentar_roi(self.grabcut_img_bgr, self.grabcut_rect, "GrabCut", it, ug, k, um, ub, inv_otsu, self.grabcut_label)
+            r_ot = segmentar_roi(self.grabcut_img_bgr, self.grabcut_rect, "Otsu", it, ug, k, um, ub, inv_otsu, self.grabcut_label)
+            r_ad = segmentar_roi(self.grabcut_img_bgr, self.grabcut_rect, "Adaptativa", it, ug, k, um, ub, inv_otsu, self.grabcut_label)
             self.grabcut_resultados = {
                 "bbox_vis": r_gc["roi_crop"],
                 "roi_crop": r_gc["mask_resultado"],
@@ -824,7 +827,8 @@ class AnalisadorCoresApp:
             metodo = self.gc_metodo_var.get()
             self.grabcut_resultados = segmentar_roi(
                 self.grabcut_img_bgr, self.grabcut_rect, metodo=metodo, iteracoes=it,
-                usar_gauss=ug, gauss_ksize=k, usar_mediana=um, usar_bilateral=ub, label=self.grabcut_label,
+                usar_gauss=ug, gauss_ksize=k, usar_mediana=um, usar_bilateral=ub,
+                inverter_otsu=inv_otsu, label=self.grabcut_label,
             )
             self.lbl_status.config(text=f"[YOLO + {metodo}] {self.grabcut_label} | ROI={self.grabcut_rect}")
 
@@ -1026,10 +1030,11 @@ class AnalisadorCoresApp:
                 if pref == "a":
                     self.grabcut_rect, self.grabcut_label = rect, lbl
 
+            inv_otsu = self.gc_inverter_otsu_var.get()
             sem = aplicar_segmentacao(img_bgr, canal="GRAY", usar_blur=True, blur_ksize=5, incluir_grabcut=True)
-            pos_gc = segmentar_roi(img_bgr, rect, "GrabCut", it, ug, k, um, ub, lbl)
-            pos_ot = segmentar_roi(img_bgr, rect, "Otsu", it, ug, k, um, ub, lbl)
-            pos_ad = segmentar_roi(img_bgr, rect, "Adaptativa", it, ug, k, um, ub, lbl)
+            pos_gc = segmentar_roi(img_bgr, rect, "GrabCut", it, ug, k, um, ub, inv_otsu, lbl)
+            pos_ot = segmentar_roi(img_bgr, rect, "Otsu", it, ug, k, um, ub, inv_otsu, lbl)
+            pos_ad = segmentar_roi(img_bgr, rect, "Adaptativa", it, ug, k, um, ub, inv_otsu, lbl)
 
             dados = {
                 f"{pref}_sem_entrada": (cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB), f"{pref.upper()} Sem ROI - Entrada"),
