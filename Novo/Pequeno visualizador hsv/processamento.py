@@ -173,7 +173,7 @@ def gerar_histograma_hsv(img_hsv):
     return canvas
 
 
-def gerar_histograma_canal(matriz_2d, nome_canal="Canal", cor=(60, 120, 210), max_val=256):
+def gerar_histograma_canal(matriz_2d, nome_canal="Canal", cor=(60, 120, 210), max_val=256, mostrar_otsu=False):
     """Gera histograma individual (800x480) para um único canal 2D."""
     largura, altura = 800, 480
     margem_esq, margem_dir = 65, 25
@@ -220,7 +220,15 @@ def gerar_histograma_canal(matriz_2d, nome_canal="Canal", cor=(60, 120, 210), ma
         cv2.line(canvas, (x_media, y_dash), (x_media, min(y_dash + 4, margem_sup + plot_h)), cor, 1)
 
     info = f"{nome_canal}: Media={media:5.1f} | Desvio={desvio:5.1f} | Mediana={mediana:5.1f}"
-    cv2.putText(canvas, info, (margem_esq, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.52, cor, 1, cv2.LINE_AA)
+    if mostrar_otsu and max_val == 256:
+        limiar_otsu, _ = cv2.threshold(matriz_2d, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        x_otsu = margem_esq + int((limiar_otsu / 255.0) * plot_w)
+        cv2.line(canvas, (x_otsu, margem_sup), (x_otsu, margem_sup + plot_h), (220, 40, 40), 2)
+        cv2.putText(canvas, f"Otsu={int(limiar_otsu)}", (min(x_otsu + 4, margem_esq + plot_w - 85), margem_sup + 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (220, 40, 40), 2, cv2.LINE_AA)
+        info += f" | Otsu={int(limiar_otsu)}"
+
+    cv2.putText(canvas, info, (margem_esq, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.50, cor, 1, cv2.LINE_AA)
 
     cv2.addWeighted(overlay, 0.16, canvas, 0.84, 0, canvas)
     cv2.rectangle(canvas, (margem_esq, margem_sup), (margem_esq + plot_w, margem_sup + plot_h), (140, 140, 140), 1)

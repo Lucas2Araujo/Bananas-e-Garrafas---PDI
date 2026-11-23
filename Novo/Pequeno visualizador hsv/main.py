@@ -4,9 +4,10 @@ from tkinter import filedialog, messagebox, ttk
 import cv2
 from PIL import Image, ImageTk
 
+from caracteristicas import extrair_todas_caracteristicas
 from componentes import PainelImagem
 from processamento import gerar_histograma_canal, processar_imagem
-from segmentacao import aplicar_grabcut, aplicar_segmentacao, detectar_roi_yolo, segmentar_roi
+from segmentacao import aplicar_segmentacao, detectar_roi_yolo, segmentar_roi
 from visualizador import JanelaZoom
 
 
@@ -100,14 +101,12 @@ class AnalisadorCoresApp:
         self._setup_aba_segmentacao()
 
         self.tab_grabcut = tk.Frame(self.notebook)
-        self.notebook.add(self.tab_grabcut, text="  3. YOLO ROI + GrabCut  ")
+        self.notebook.add(self.tab_grabcut, text="  3. YOLO ROI + Segmentação  ")
         self._setup_aba_grabcut()
 
-        self.comp_roi_paineis = {}
-        self.comp_roi_resultados = {}
-        self.tab_comp_roi = tk.Frame(self.notebook)
-        self.notebook.add(self.tab_comp_roi, text="  4. Comparativo: Sem ROI vs Pós-ROI  ")
-        self._setup_aba_comp_roi()
+        self.tab_caracteristicas = tk.Frame(self.notebook)
+        self.notebook.add(self.tab_caracteristicas, text="  4. Extração de Características  ")
+        self._setup_aba_caracteristicas()
 
         self.lbl_status = tk.Label(
             self.frame_workspace,
@@ -181,6 +180,7 @@ class AnalisadorCoresApp:
             ("b", "Canal B (Blue)"), ("hist_rgb", "Histograma RGB"),
             ("hsv", "HSV Completo"), ("h", "Canal H (Matiz)"), ("s", "Canal S (Saturação)"),
             ("v", "Canal V (Brilho)"), ("hist_hsv", "Histograma HSV"),
+            ("hist_gray_otsu", "Hist. Tons de Cinza (Otsu)"), ("hist_s_otsu", "Hist. Banda S (Otsu)"),
         ]
 
         self.paineis_ind = {}
@@ -266,7 +266,10 @@ class AnalisadorCoresApp:
             for c, chave in enumerate(["rgb", "h", "s", "v"]):
                 self.grid_ind.columnconfigure(c, weight=1)
                 self.paineis_ind[chave].grid(row=0, column=c, padx=6, pady=6, sticky="nsew")
+            self.paineis_ind["hist_gray_otsu"].grid(row=1, column=0, columnspan=2, padx=6, pady=6, sticky="nsew")
+            self.paineis_ind["hist_s_otsu"].grid(row=1, column=2, columnspan=2, padx=6, pady=6, sticky="nsew")
             self.grid_ind.rowconfigure(0, weight=1)
+            self.grid_ind.rowconfigure(1, weight=1)
         else:
             layout = [
                 ("rgb", 0, 0), ("r", 0, 1), ("g", 0, 2), ("b", 0, 3), ("hist_rgb", 0, 4),
@@ -343,6 +346,11 @@ class AnalisadorCoresApp:
 
     def _obter_matriz(self, chave_origem, chave_var):
         variacoes = self.dados_imagens[chave_origem]["variacoes"]
+        if chave_var == "hist_gray_otsu":
+            gray = cv2.cvtColor(variacoes["bgr"], cv2.COLOR_BGR2GRAY)
+            return gerar_histograma_canal(gray, "Tons de Cinza", cor=(80, 80, 80), max_val=256, mostrar_otsu=True)
+        if chave_var == "hist_s_otsu":
+            return gerar_histograma_canal(variacoes["s"], "Banda S (HSV)", cor=(30, 140, 210), max_val=256, mostrar_otsu=True)
         if chave_var in ("r", "g", "b"):
             sufixo = "_gray" if self.modo_cinza_rgb.get() else "_color"
             return variacoes[f"{chave_var}{sufixo}"]
@@ -477,12 +485,6 @@ class AnalisadorCoresApp:
         topo.pack(pady=6, fill=tk.X, padx=10)
 
         tk.Button(
-            topo, text="🖼️ Carregar Fundo (opcional p/ Método 1)",
-            command=lambda: self._carregar_img_segmentacao("fundo"),
-            font=("Arial", 9, "bold"), bg="#607D8B", fg="white", padx=10, pady=4,
-        ).pack(side=tk.LEFT, padx=4)
-
-        tk.Button(
             topo, text="📦 Trocar Objeto",
             command=lambda: self._carregar_img_segmentacao("objeto"),
             font=("Arial", 9, "bold"), bg="#4CAF50", fg="white", padx=10, pady=4,
@@ -492,7 +494,6 @@ class AnalisadorCoresApp:
         self.seg_metodo_var = tk.StringVar(value="Todos (Comparar 3)")
         self.seg_usar_blur_var = tk.BooleanVar(value=True)
         self.seg_blur_var = tk.IntVar(value=5)
-        self.seg_absdiff_var = tk.IntVar(value=30)
         self.seg_bloco_var = tk.IntVar(value=21)
         self.seg_c_var = tk.IntVar(value=5)
         self.seg_inverter_var = tk.BooleanVar(value=True)
@@ -507,16 +508,10 @@ class AnalisadorCoresApp:
         tk.Label(topo, text="Técnica:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=(10, 4))
         combo_metodo = ttk.Combobox(
             topo, textvariable=self.seg_metodo_var, state="readonly", width=22,
-            values=["Todos (Comparar 3)", "1. Subtração (absdiff)", "2. Otsu", "3. Adaptativa", "4. GrabCut (Sem ROI)"],
+            values=["Todos (Comparar 3)", "1. Otsu", "2. Adaptativa", "3. Watershed"],
         )
         combo_metodo.pack(side=tk.LEFT, padx=2)
         combo_metodo.bind("<<ComboboxSelected>>", lambda _e: self._ao_mudar_metodo_seg())
-
-        self.seg_grabcut_no_2_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(
-            topo, text="GrabCut no 2º quadro", variable=self.seg_grabcut_no_2_var,
-            command=self._ao_mudar_metodo_seg, font=("Arial", 9, "bold"), cursor="hand2",
-        ).pack(side=tk.LEFT, padx=6)
 
         controles = tk.Frame(self.tab_segmentacao, bg="#f5f5f5", bd=1, relief=tk.GROOVE)
         controles.pack(fill=tk.X, padx=10, pady=(0, 6))
@@ -536,7 +531,6 @@ class AnalisadorCoresApp:
         ).pack(side=tk.LEFT, padx=8)
 
         _criar_slider(controles, "Gaussian Blur (ímpar)", self.seg_blur_var, 1, 15, 2)
-        _criar_slider(controles, "Limiar absdiff", self.seg_absdiff_var, 1, 255, 1)
         _criar_slider(controles, "Bloco Adaptativa (ímpar)", self.seg_bloco_var, 3, 51, 2)
         _criar_slider(controles, "Constante C", self.seg_c_var, -20, 30, 1)
 
@@ -550,10 +544,9 @@ class AnalisadorCoresApp:
 
         paineis_cfg = [
             ("objeto_gray", "Entrada (Canal / Blur)"),
-            ("mask_subtracao", "1. Subtração de Fundo (absdiff)"),
-            ("mask_otsu", "2. Limiarização de Otsu"),
-            ("mask_adaptativa", "3. Limiarização Adaptativa"),
-            ("mask_grabcut", "4. GrabCut (Sem ROI)"),
+            ("mask_otsu", "1. Limiarização de Otsu"),
+            ("mask_adaptativa", "2. Limiarização Adaptativa"),
+            ("mask_watershed", "3. Watershed"),
         ]
         for chave, titulo in paineis_cfg:
             self.seg_paineis[chave] = PainelImagem(
@@ -576,10 +569,9 @@ class AnalisadorCoresApp:
 
         metodo = self.seg_metodo_var.get()
         mapa = {
-            "1. Subtração (absdiff)": "mask_subtracao",
-            "2. Otsu": "mask_otsu",
-            "3. Adaptativa": "mask_adaptativa",
-            "4. GrabCut (Sem ROI)": "mask_grabcut",
+            "1. Otsu": "mask_otsu",
+            "2. Adaptativa": "mask_adaptativa",
+            "3. Watershed": "mask_watershed",
         }
         if metodo in mapa:
             self.seg_grid_frame.rowconfigure(0, weight=1)
@@ -587,8 +579,7 @@ class AnalisadorCoresApp:
                 self.seg_grid_frame.columnconfigure(col, weight=1)
                 self.seg_paineis[ch].grid(row=0, column=col, sticky="nsew", padx=6, pady=6)
         else:
-            segundo = "mask_grabcut" if self.seg_grabcut_no_2_var.get() else "mask_subtracao"
-            posicoes = [("objeto_gray", 0, 0), (segundo, 0, 1), ("mask_otsu", 1, 0), ("mask_adaptativa", 1, 1)]
+            posicoes = [("objeto_gray", 0, 0), ("mask_watershed", 0, 1), ("mask_otsu", 1, 0), ("mask_adaptativa", 1, 1)]
             for i in range(2):
                 self.seg_grid_frame.columnconfigure(i, weight=1)
                 self.seg_grid_frame.rowconfigure(i, weight=1)
@@ -618,21 +609,14 @@ class AnalisadorCoresApp:
         if self.seg_img_objeto_bgr is None:
             return
 
-        incluir_gc = (
-            self.seg_metodo_var.get() == "4. GrabCut (Sem ROI)"
-            or self.seg_grabcut_no_2_var.get()
-        )
         self.seg_resultados = aplicar_segmentacao(
             self.seg_img_objeto_bgr,
-            img_fundo_bgr=self.seg_img_fundo_bgr,
             canal=self.seg_canal_var.get(),
             usar_blur=self.seg_usar_blur_var.get(),
             blur_ksize=self.seg_blur_var.get(),
-            limiar_absdiff=self.seg_absdiff_var.get(),
             bloco_adaptativo=self.seg_bloco_var.get(),
             constante_c=self.seg_c_var.get(),
             inverter_limiar=self.seg_inverter_var.get(),
-            incluir_grabcut=incluir_gc,
         )
         thumb = (380, 260) if self.seg_metodo_var.get() == "Todos (Comparar 3)" else (560, 460)
         for chave, painel in self.seg_paineis.items():
@@ -683,9 +667,8 @@ class AnalisadorCoresApp:
         ).pack(side=tk.LEFT, padx=5)
 
         self.gc_pad_var = tk.IntVar(value=10)
-        self.gc_iter_var = tk.IntVar(value=5)
-        self.gc_metodo_var = tk.StringVar(value="GrabCut")
-        self.gc_espaco_yolo_var = tk.StringVar(value="BGR")
+        self.gc_metodo_var = tk.StringVar(value="Otsu")
+        self.gc_canal_var = tk.StringVar(value="GRAY")
         self.gc_comparar_3_var = tk.BooleanVar(value=False)
         self.gc_usar_gauss_var = tk.BooleanVar(value=False)
         self.gc_usar_mediana_var = tk.BooleanVar(value=False)
@@ -693,11 +676,13 @@ class AnalisadorCoresApp:
         self.gc_inverter_otsu_var = tk.BooleanVar(value=False)
         self.gc_blur_var = tk.IntVar(value=5)
 
-        tk.Label(topo, text="YOLO:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=(4, 2))
-        ttk.Combobox(
-            topo, textvariable=self.gc_espaco_yolo_var, state="readonly", width=6,
-            values=["BGR", "HSV", "GRAY"],
-        ).pack(side=tk.LEFT, padx=2)
+        tk.Label(topo, text="Canal ROI:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=(4, 2))
+        combo_canal_gc = ttk.Combobox(
+            topo, textvariable=self.gc_canal_var, state="readonly", width=6,
+            values=["GRAY", "R", "G", "B", "H", "S", "V"],
+        )
+        combo_canal_gc.pack(side=tk.LEFT, padx=2)
+        combo_canal_gc.bind("<<ComboboxSelected>>", lambda _e: self._atualizar_grabcut())
 
         tk.Checkbutton(
             topo, text="Comparar 3 Técnicas", variable=self.gc_comparar_3_var,
@@ -708,7 +693,7 @@ class AnalisadorCoresApp:
         tk.Label(topo, text="Técnica ROI:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=(6, 4))
         combo_gc = ttk.Combobox(
             topo, textvariable=self.gc_metodo_var, state="readonly", width=11,
-            values=["GrabCut", "Otsu", "Adaptativa"],
+            values=["Otsu", "Adaptativa", "Watershed"],
         )
         combo_gc.pack(side=tk.LEFT, padx=2)
         combo_gc.bind("<<ComboboxSelected>>", lambda _e: self._atualizar_grabcut())
@@ -735,14 +720,6 @@ class AnalisadorCoresApp:
             command=lambda _v: self._ao_mudar_padding_grabcut(), length=120,
         ).pack()
 
-        iter_box = tk.Frame(topo)
-        iter_box.pack(side=tk.LEFT, padx=8)
-        tk.Label(iter_box, text="Iterações GrabCut", font=("Arial", 9, "bold")).pack()
-        tk.Scale(
-            iter_box, from_=1, to=10, orient=tk.HORIZONTAL, variable=self.gc_iter_var,
-            command=lambda _v: self._atualizar_grabcut(), length=120,
-        ).pack()
-
         grid = tk.Frame(self.tab_grabcut)
         grid.pack(expand=True, fill="both", padx=10, pady=5)
         for i in range(2):
@@ -752,7 +729,7 @@ class AnalisadorCoresApp:
         paineis_gc = [
             ("bbox_vis", "1. Detecção YOLO / ROI", 0, 0),
             ("roi_crop", "2. Recorte da ROI", 0, 1),
-            ("mask_resultado", "3. Máscara (GrabCut / Otsu / Adaptativa)", 1, 0),
+            ("mask_resultado", "3. Máscara (Otsu / Adaptativa / Watershed)", 1, 0),
             ("objeto_isolado", "4. Objeto Isolado (Fundo Removido)", 1, 1),
         ]
         for chave, titulo, r, c in paineis_gc:
@@ -789,7 +766,7 @@ class AnalisadorCoresApp:
             rect, texto = detectar_roi_yolo(
                 self.grabcut_img_bgr,
                 padding_pct=self.gc_pad_var.get(),
-                espaco_yolo=self.gc_espaco_yolo_var.get(),
+                espaco_yolo="BGR",
             )
             self.grabcut_rect = rect
             self.grabcut_label = texto
@@ -808,29 +785,28 @@ class AnalisadorCoresApp:
         k = self.gc_blur_var.get()
         um = self.gc_usar_mediana_var.get()
         ub = self.gc_usar_bilateral_var.get()
-        it = self.gc_iter_var.get()
-
         inv_otsu = self.gc_inverter_otsu_var.get()
 
+        canal_roi = self.gc_canal_var.get()
         if self.gc_comparar_3_var.get():
-            r_gc = segmentar_roi(self.grabcut_img_bgr, self.grabcut_rect, "GrabCut", it, ug, k, um, ub, inv_otsu, self.grabcut_label)
-            r_ot = segmentar_roi(self.grabcut_img_bgr, self.grabcut_rect, "Otsu", it, ug, k, um, ub, inv_otsu, self.grabcut_label)
-            r_ad = segmentar_roi(self.grabcut_img_bgr, self.grabcut_rect, "Adaptativa", it, ug, k, um, ub, inv_otsu, self.grabcut_label)
+            r_ot = segmentar_roi(self.grabcut_img_bgr, self.grabcut_rect, "Otsu", canal_roi, ug, k, um, ub, inv_otsu, self.grabcut_label)
+            r_ad = segmentar_roi(self.grabcut_img_bgr, self.grabcut_rect, "Adaptativa", canal_roi, ug, k, um, ub, inv_otsu, self.grabcut_label)
+            r_ws = segmentar_roi(self.grabcut_img_bgr, self.grabcut_rect, "Watershed", canal_roi, ug, k, um, ub, inv_otsu, self.grabcut_label)
             self.grabcut_resultados = {
-                "bbox_vis": r_gc["roi_crop"],
-                "roi_crop": r_gc["mask_resultado"],
-                "mask_resultado": r_ot["mask_resultado"],
-                "objeto_isolado": r_ad["mask_resultado"],
+                "bbox_vis": r_ot["roi_crop"],
+                "roi_crop": r_ot["mask_resultado"],
+                "mask_resultado": r_ad["mask_resultado"],
+                "objeto_isolado": r_ws["mask_resultado"],
             }
-            self.lbl_status.config(text=f"[YOLO + Comparativo 3 Técnicas] {self.grabcut_label} | ROI={self.grabcut_rect}")
+            self.lbl_status.config(text=f"[YOLO + Comparativo 3 Técnicas | Canal={canal_roi}] ROI={self.grabcut_rect}")
         else:
             metodo = self.gc_metodo_var.get()
             self.grabcut_resultados = segmentar_roi(
-                self.grabcut_img_bgr, self.grabcut_rect, metodo=metodo, iteracoes=it,
+                self.grabcut_img_bgr, self.grabcut_rect, metodo=metodo, canal=canal_roi,
                 usar_gauss=ug, gauss_ksize=k, usar_mediana=um, usar_bilateral=ub,
                 inverter_otsu=inv_otsu, label=self.grabcut_label,
             )
-            self.lbl_status.config(text=f"[YOLO + {metodo}] {self.grabcut_label} | ROI={self.grabcut_rect}")
+            self.lbl_status.config(text=f"[YOLO + {metodo} | Canal={canal_roi}] ROI={self.grabcut_rect}")
 
         for chave, painel in self.grabcut_paineis.items():
             matriz = self.grabcut_resultados.get(chave)
@@ -1031,18 +1007,18 @@ class AnalisadorCoresApp:
                     self.grabcut_rect, self.grabcut_label = rect, lbl
 
             inv_otsu = self.gc_inverter_otsu_var.get()
-            sem = aplicar_segmentacao(img_bgr, canal="GRAY", usar_blur=True, blur_ksize=5, incluir_grabcut=True)
-            pos_gc = segmentar_roi(img_bgr, rect, "GrabCut", it, ug, k, um, ub, inv_otsu, lbl)
-            pos_ot = segmentar_roi(img_bgr, rect, "Otsu", it, ug, k, um, ub, inv_otsu, lbl)
-            pos_ad = segmentar_roi(img_bgr, rect, "Adaptativa", it, ug, k, um, ub, inv_otsu, lbl)
+            sem = aplicar_segmentacao(img_bgr, canal="GRAY", usar_blur=True, blur_ksize=5)
+            pos_ws = segmentar_roi(img_bgr, rect, "Watershed", ug, k, um, ub, inv_otsu, lbl)
+            pos_ot = segmentar_roi(img_bgr, rect, "Otsu", ug, k, um, ub, inv_otsu, lbl)
+            pos_ad = segmentar_roi(img_bgr, rect, "Adaptativa", ug, k, um, ub, inv_otsu, lbl)
 
             dados = {
                 f"{pref}_sem_entrada": (cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB), f"{pref.upper()} Sem ROI - Entrada"),
-                f"{pref}_sem_grabcut": (sem["mask_grabcut"], f"{pref.upper()} Sem ROI - GrabCut (it=3)"),
+                f"{pref}_sem_grabcut": (sem["mask_watershed"], f"{pref.upper()} Sem ROI - Watershed"),
                 f"{pref}_sem_otsu": (sem["mask_otsu"], f"{pref.upper()} Sem ROI - Otsu (Gauss k=5)"),
                 f"{pref}_sem_adaptativa": (sem["mask_adaptativa"], f"{pref.upper()} Sem ROI - Adaptativa (b=21, C=5)"),
-                f"{pref}_pos_roi": (pos_gc["roi_crop"], f"{pref.upper()} Pós-ROI ({lbl}, pad={pad}%)"),
-                f"{pref}_pos_grabcut": (pos_gc["mask_resultado"], f"{pref.upper()} Pós-ROI GrabCut (it={it}, {desc_f})"),
+                f"{pref}_pos_roi": (pos_ot["roi_crop"], f"{pref.upper()} Pós-ROI ({lbl}, pad={pad}%)"),
+                f"{pref}_pos_grabcut": (pos_ws["mask_resultado"], f"{pref.upper()} Pós-ROI Watershed ({desc_f})"),
                 f"{pref}_pos_otsu": (pos_ot["mask_resultado"], f"{pref.upper()} Pós-ROI Otsu ({desc_f})"),
                 f"{pref}_pos_adaptativa": (pos_ad["mask_resultado"], f"{pref.upper()} Pós-ROI Adaptativa ({desc_f})"),
             }
@@ -1052,7 +1028,7 @@ class AnalisadorCoresApp:
                 painel.definir_titulo(titulo)
                 painel.atualizar_miniatura(matriz, (260, 190))
 
-        self.lbl_status.config(text=f"[Comparativo] {len(alvos)} imagem(ns) | Filtros ROI: {desc_f} | pad={pad}% it={it}")
+        self.lbl_status.config(text=f"[Comparativo] {len(alvos)} imagem(ns) | Filtros ROI: {desc_f} | pad={pad}%")
 
     def _abrir_zoom_comp_roi(self, chave, titulo):
         matriz = self.comp_roi_resultados.get(chave)
@@ -1068,6 +1044,181 @@ class AnalisadorCoresApp:
             return
         caminho = filedialog.asksaveasfilename(
             defaultextension=".png", initialfile=f"comparativo_{chave}.png",
+            filetypes=[("PNG", "*.png"), ("JPEG", "*.jpg")],
+        )
+        if caminho:
+            self._salvar_disco(matriz, caminho)
+            messagebox.showinfo("Sucesso", f"Imagem salva em:\n{caminho}")
+
+    # =========================================================================
+    # ABA 4: EXTRAÇÃO DE CARACTERÍSTICAS (FORMA & TEXTURA)
+    # =========================================================================
+    def _setup_aba_caracteristicas(self):
+        topo = tk.Frame(self.tab_caracteristicas)
+        topo.pack(pady=6, fill=tk.X, padx=10)
+
+        self.carac_mascara_var = tk.StringVar(value="Otsu")
+        self.carac_usar_roi_var = tk.BooleanVar(value=True)
+        self.carac_inverter_var = tk.BooleanVar(value=False)
+        self.carac_comparar_var = tk.BooleanVar(value=False)
+        self.carac_resultados = {}
+        self.carac_paineis = {}
+
+        tk.Label(topo, text="Máscara Ativa:", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=(4, 4))
+        ttk.Combobox(
+            topo, textvariable=self.carac_mascara_var, state="readonly", width=14,
+            values=["Otsu", "Adaptativa", "Watershed"],
+        ).pack(side=tk.LEFT, padx=4)
+
+        tk.Checkbutton(
+            topo, text="Usar ROI do YOLO", variable=self.carac_usar_roi_var,
+            font=("Arial", 9, "bold"), cursor="hand2",
+        ).pack(side=tk.LEFT, padx=8)
+
+        tk.Checkbutton(
+            topo, text="Inverter Máscara", variable=self.carac_inverter_var,
+            command=self._atualizar_caracteristicas, font=("Arial", 9, "bold"), cursor="hand2",
+        ).pack(side=tk.LEFT, padx=8)
+
+        tk.Checkbutton(
+            topo, text="Comparar 3 Máscaras", variable=self.carac_comparar_var,
+            command=self._atualizar_caracteristicas, font=("Arial", 9, "bold"),
+            bg="#fff3e0", padx=8, pady=3, relief=tk.RAISED, cursor="hand2",
+        ).pack(side=tk.LEFT, padx=8)
+
+        tk.Button(
+            topo, text="⚙️ Extrair Características", command=self._atualizar_caracteristicas,
+            font=("Arial", 10, "bold"), bg="#1976D2", fg="white", padx=12, pady=4, cursor="hand2",
+        ).pack(side=tk.LEFT, padx=8)
+
+        grid = tk.Frame(self.tab_caracteristicas)
+        grid.pack(expand=True, fill="both", padx=10, pady=5)
+        for c in range(4):
+            grid.columnconfigure(c, weight=1)
+        for r in range(2):
+            grid.rowconfigure(r, weight=1)
+
+        paineis_cfg = [
+            ("bif_forma", "1. Bifurcação: Máscara (Forma)", 0, 0),
+            ("bif_textura", "1. Bifurcação: Cinza (bitwise AND)", 0, 1),
+            ("cadeia_contorno", "2. Forma: Contorno (Cód. Cadeia)", 0, 2),
+            ("cadeia_hist", "2. Forma: Hist. Cód. Cadeia", 0, 3),
+            ("lbp_mapa", "3. Textura: Mapa LBP (P=8, R=1)", 1, 0),
+            ("lbp_hist", "3. Textura: Histograma LBP", 1, 1),
+            ("glcm_heatmap", "3. Textura: Matriz GLCM (Heatmap)", 1, 2),
+        ]
+
+        for chave, titulo, r, c in paineis_cfg:
+            p = PainelImagem(
+                grid, titulo=titulo, chave_origem="carac", chave_var=chave,
+                on_zoom=lambda _orig, ch=chave, t=titulo: self._abrir_zoom_carac(ch, t),
+                on_download=lambda _orig, ch=chave: self._salvar_carac_individual(ch),
+            )
+            p.grid(row=r, column=c, padx=5, pady=5, sticky="nsew")
+            self.carac_paineis[chave] = p
+
+        frame_txt = tk.LabelFrame(
+            grid, text="Matrizes e Vetores (Hu + Haralick)",
+            font=("Arial", 9, "bold"), padx=6, pady=6,
+        )
+        frame_txt.grid(row=1, column=3, padx=5, pady=5, sticky="nsew")
+        self.carac_texto = tk.Text(frame_txt, height=14, width=38, font=("Consolas", 8), bg="#f9fafb")
+        self.carac_texto.pack(expand=True, fill="both")
+
+    def _atualizar_caracteristicas(self):
+        if not self.dados_imagens["ind"]:
+            messagebox.showwarning("Aviso", "Carregue uma imagem principal primeiro.")
+            return
+
+        img_bgr = self.dados_imagens["ind"]["variacoes"]["bgr"]
+        if self.carac_usar_roi_var.get():
+            rect, _ = detectar_roi_yolo(img_bgr, padding_pct=10, espaco_yolo="BGR")
+            x, y, w, h = rect
+            img_proc = img_bgr[y : y + h, x : x + w].copy()
+        else:
+            img_proc = img_bgr
+
+        seg = aplicar_segmentacao(
+            img_proc,
+            canal=self.seg_canal_var.get() if hasattr(self, "seg_canal_var") else "GRAY",
+            usar_blur=self.seg_usar_blur_var.get() if hasattr(self, "seg_usar_blur_var") else True,
+            blur_ksize=self.seg_blur_var.get() if hasattr(self, "seg_blur_var") else 5,
+            bloco_adaptativo=self.seg_bloco_var.get() if hasattr(self, "seg_bloco_var") else 21,
+            constante_c=self.seg_c_var.get() if hasattr(self, "seg_c_var") else 5,
+            inverter_limiar=self.seg_inverter_var.get() if hasattr(self, "seg_inverter_var") else True,
+        )
+        mapa_mask = {
+            "Otsu": seg["mask_otsu"],
+            "Adaptativa": seg["mask_adaptativa"],
+            "Watershed": seg["mask_watershed"],
+        }
+
+        def _prep_mask(m):
+            return cv2.bitwise_not(m) if self.carac_inverter_var.get() else m
+
+        mask_ativa = _prep_mask(mapa_mask[self.carac_mascara_var.get()])
+        res = extrair_todas_caracteristicas(img_proc, mask_ativa)
+        if res is None:
+            return
+
+        self.carac_resultados = {
+            "bif_forma": res["bifurcacao"]["entrada_forma"],
+            "bif_textura": res["bifurcacao"]["entrada_textura"],
+            "cadeia_contorno": res["cadeia"]["img_contorno"],
+            "cadeia_hist": res["cadeia"]["img_histograma"],
+            "lbp_mapa": res["lbp"]["mapa_lbp"],
+            "lbp_hist": res["lbp"]["img_histograma"],
+            "glcm_heatmap": res["haralick"]["img_heatmap"],
+        }
+        for chave, painel in self.carac_paineis.items():
+            painel.atualizar_miniatura(self.carac_resultados[chave], (300, 190))
+
+        if self.carac_comparar_var.get():
+            res_ot = extrair_todas_caracteristicas(img_proc, _prep_mask(mapa_mask["Otsu"]))
+            res_ad = extrair_todas_caracteristicas(img_proc, _prep_mask(mapa_mask["Adaptativa"]))
+            res_ws = extrair_todas_caracteristicas(img_proc, _prep_mask(mapa_mask["Watershed"]))
+            linhas = ["=== COMPARATIVO: OTSU | ADAPT | WATER ==="]
+            linhas.append("--- Hu (log10) ---")
+            for i in range(7):
+                linhas.append(
+                    f"Hu{i+1}: {res_ot['hu']['log'][i]:6.2f} | {res_ad['hu']['log'][i]:6.2f} | {res_ws['hu']['log'][i]:6.2f}"
+                )
+            linhas.append("--- Haralick (GLCM) ---")
+            for k in res_ot["haralick"]["metricas"]:
+                v1 = res_ot["haralick"]["metricas"][k]
+                v2 = res_ad["haralick"]["metricas"][k]
+                v3 = res_ws["haralick"]["metricas"][k]
+                linhas.append(f"{k[:9]:<9}: {v1:6.3f} | {v2:6.3f} | {v3:6.3f}")
+        else:
+            linhas = [f"=== 7 MOMENTOS DE HU ({self.carac_mascara_var.get()}) ==="]
+            for idx, (bruto, log_v) in enumerate(zip(res["hu"]["brutos"], res["hu"]["log"]), start=1):
+                linhas.append(f"Hu[{idx}]: {bruto: .3e} | log={log_v: .3f}")
+            seq = res["cadeia"]["sequencia"]
+            linhas.append(f"\nCód. Cadeia (len={len(seq)}): {seq[:18]}...")
+            linhas.append("\n=== HARALICK / GLCM ===")
+            for nome, val in res["haralick"]["metricas"].items():
+                linhas.append(f"{nome:<15}: {val:.5f}")
+
+        self.carac_texto.delete("1.0", tk.END)
+        self.carac_texto.insert("1.0", "\n".join(linhas))
+        self.lbl_status.config(
+            text=f"[Características] Máscara: {self.carac_mascara_var.get()} | ROI YOLO: {'Sim' if self.carac_usar_roi_var.get() else 'Não'}"
+        )
+
+    def _abrir_zoom_carac(self, chave, titulo):
+        matriz = self.carac_resultados.get(chave)
+        if matriz is None:
+            messagebox.showwarning("Aviso", "Clique em 'Extrair Características' primeiro.")
+            return
+        JanelaZoom(self.root, titulo, matriz)
+
+    def _salvar_carac_individual(self, chave):
+        matriz = self.carac_resultados.get(chave)
+        if matriz is None:
+            messagebox.showwarning("Aviso", "Nenhuma imagem disponível para salvar.")
+            return
+        caminho = filedialog.asksaveasfilename(
+            defaultextension=".png", initialfile=f"caracteristica_{chave}.png",
             filetypes=[("PNG", "*.png"), ("JPEG", "*.jpg")],
         )
         if caminho:
