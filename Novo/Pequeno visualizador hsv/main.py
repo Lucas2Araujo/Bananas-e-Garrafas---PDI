@@ -6,9 +6,10 @@ from PIL import Image, ImageTk
 
 from caracteristicas import extrair_todas_caracteristicas
 from componentes import PainelImagem
-from processamento import gerar_histograma_canal, processar_imagem
+from processamento import gerar_histograma_canal, processar_imagem, processar_matriz_bgr
 from segmentacao import aplicar_segmentacao, detectar_roi_yolo, segmentar_roi
 from visualizador import JanelaZoom
+from webcam import JanelaWebcam
 
 
 class AnalisadorCoresApp:
@@ -19,6 +20,8 @@ class AnalisadorCoresApp:
 
         self.dados_imagens = {"ind": {}, "comp_b": {}}
         self.workspace_ativo = False
+        self.janela_webcam = None
+        self._webcam_destino = None
 
         # Controles de visualização RGB/HSV
         self.modo_cinza_rgb = tk.BooleanVar(value=False)
@@ -41,6 +44,7 @@ class AnalisadorCoresApp:
         self._setup_tela_inicial()
         self._setup_workspace()
         self._configurar_atalhos()
+        self.root.protocol("WM_DELETE_WINDOW", self._ao_fechar_app)
 
     # =========================================================================
     # TELA INICIAL E ATALHOS
@@ -63,8 +67,11 @@ class AnalisadorCoresApp:
             font=("Arial", 11), bg="white", fg="#4b5563",
         ).pack(pady=(0, 24))
 
+        acoes_iniciais = tk.Frame(card, bg="white")
+        acoes_iniciais.pack(pady=(0, 20))
+
         tk.Button(
-            card,
+            acoes_iniciais,
             text="📂 Importar Imagem Principal (Ctrl+O)",
             command=lambda: self.carregar_imagem("ind"),
             font=("Arial", 12, "bold"),
@@ -73,7 +80,19 @@ class AnalisadorCoresApp:
             padx=22,
             pady=10,
             cursor="hand2",
-        ).pack(pady=(0, 20))
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Button(
+            acoes_iniciais,
+            text="📷 Usar Webcam",
+            command=lambda: self.abrir_webcam("ind"),
+            font=("Arial", 12, "bold"),
+            bg="#2196F3",
+            fg="white",
+            padx=22,
+            pady=10,
+            cursor="hand2",
+        ).pack(side=tk.LEFT)
 
         atalhos = (
             "Atalhos rápidos após importar:\n"
@@ -143,6 +162,11 @@ class AnalisadorCoresApp:
             font=("Arial", 10, "bold"), bg="#4CAF50", fg="white", padx=12, pady=5, cursor="hand2",
         ).pack(side=tk.LEFT, padx=4)
 
+        tk.Button(
+            topo, text="📷 Webcam", command=lambda: self.abrir_webcam("ind"),
+            font=("Arial", 10, "bold"), bg="#2196F3", fg="white", padx=12, pady=5, cursor="hand2",
+        ).pack(side=tk.LEFT, padx=4)
+
         tk.Checkbutton(
             topo, text="⚖️ Comparar 2ª Imagem (Ctrl+B)", variable=self.modo_comparar,
             command=self._alternar_comparacao, font=("Arial", 10, "bold"),
@@ -152,6 +176,10 @@ class AnalisadorCoresApp:
         self.btn_carregar_b = tk.Button(
             topo, text="📂 Escolher 2ª Imagem", command=lambda: self.carregar_imagem("comp_b"),
             font=("Arial", 10, "bold"), bg="#FF9800", fg="white", padx=10, pady=5, cursor="hand2",
+        )
+        self.btn_webcam_b = tk.Button(
+            topo, text="📷 Webcam (2ª Img)", command=lambda: self.abrir_webcam("comp_b"),
+            font=("Arial", 10, "bold"), bg="#0284c7", fg="white", padx=10, pady=5, cursor="hand2",
         )
 
         tk.Button(
@@ -241,6 +269,7 @@ class AnalisadorCoresApp:
             self.grid_ind.pack_forget()
             self.frame_comp.pack(expand=True, fill="both", padx=4, pady=4)
             self.btn_carregar_b.pack(side=tk.LEFT, padx=4)
+            self.btn_webcam_b.pack(side=tk.LEFT, padx=4)
             if not self.dados_imagens["comp_b"]:
                 self.carregar_imagem("comp_b")
             else:
@@ -250,6 +279,7 @@ class AnalisadorCoresApp:
         else:
             self.frame_comp.pack_forget()
             self.btn_carregar_b.pack_forget()
+            self.btn_webcam_b.pack_forget()
             self.grid_ind.pack(expand=True, fill="both", padx=12, pady=5)
             if self.dados_imagens["ind"]:
                 self._atualizar_paineis("ind")
@@ -311,6 +341,23 @@ class AnalisadorCoresApp:
     # =========================================================================
     # GERENCIAMENTO DE IMAGENS, HISTOGRAMA POR CANAL E INSPEÇÃO
     # =========================================================================
+    def _aplicar_variacoes(self, destino, variacoes, nome_base, msg_status):
+        self._entrar_workspace()
+        self.dados_imagens[destino] = {
+            "nome_base": nome_base,
+            "shape": variacoes["rgb"].shape[:2],
+            "variacoes": variacoes,
+        }
+        self._atualizar_paineis(destino)
+
+        if destino == "ind":
+            self.seg_img_objeto_bgr = variacoes["bgr"]
+            self.grabcut_img_bgr = variacoes["bgr"]
+            self.grabcut_rect = None
+            self.grabcut_resultados = {}
+            self._atualizar_segmentacao()
+        self.lbl_status.config(text=msg_status)
+
     def carregar_imagem(self, destino):
         caminho = filedialog.askopenfilename(
             title="Escolha uma imagem",
@@ -324,21 +371,47 @@ class AnalisadorCoresApp:
             messagebox.showerror("Erro", "Não foi possível abrir a imagem.")
             return
 
-        self._entrar_workspace()
-        self.dados_imagens[destino] = {
-            "nome_base": os.path.splitext(os.path.basename(caminho))[0],
-            "shape": variacoes["rgb"].shape[:2],
-            "variacoes": variacoes,
-        }
-        self._atualizar_paineis(destino)
+        nome_arq = os.path.basename(caminho)
+        self._aplicar_variacoes(
+            destino,
+            variacoes,
+            os.path.splitext(nome_arq)[0],
+            f"Imagem {'principal' if destino == 'ind' else '2'} carregada: {nome_arq}",
+        )
 
-        if destino == "ind":
-            self.seg_img_objeto_bgr = variacoes["bgr"]
-            self.grabcut_img_bgr = variacoes["bgr"]
-            self.grabcut_rect = None
-            self.grabcut_resultados = {}
-            self._atualizar_segmentacao()
-            self.lbl_status.config(text=f"Imagem principal carregada: {os.path.basename(caminho)}")
+    def abrir_webcam(self, destino):
+        if self.janela_webcam is not None and self.janela_webcam.winfo_exists():
+            if self._webcam_destino == destino:
+                self.janela_webcam.lift()
+                self.janela_webcam.focus_force()
+                return
+            self.janela_webcam.fechar()
+
+        self._webcam_destino = destino
+        destino_label = "Imagem Principal" if destino == "ind" else "2ª Imagem (Comparação)"
+
+        def _on_capturar(frame_bgr, nome_cam):
+            variacoes = processar_matriz_bgr(frame_bgr)
+            if variacoes is None:
+                messagebox.showerror("Erro", "Falha ao processar o frame capturado da webcam.")
+                return
+            self._aplicar_variacoes(
+                destino,
+                variacoes,
+                "webcam_captura",
+                f"Frame capturado da webcam ({nome_cam}) para {'Imagem Principal' if destino == 'ind' else '2ª Imagem'}.",
+            )
+
+        def _on_fechar():
+            self.janela_webcam = None
+            self._webcam_destino = None
+
+        self.janela_webcam = JanelaWebcam(self.root, destino_label, _on_capturar, _on_fechar)
+
+    def _ao_fechar_app(self):
+        if self.janela_webcam is not None and self.janela_webcam.winfo_exists():
+            self.janela_webcam.fechar()
+        self.root.destroy()
 
     def _alternar_modo_canais_rgb(self):
         if self.dados_imagens["ind"]:

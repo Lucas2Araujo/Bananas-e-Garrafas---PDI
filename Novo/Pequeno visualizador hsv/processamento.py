@@ -4,8 +4,12 @@ import numpy as np
 
 def processar_imagem(caminho):
     """Lê a imagem e gera todas as variações RGB, HSV e histogramas detalhados."""
-    img_bgr = cv2.imread(caminho)
-    if img_bgr is None:
+    return processar_matriz_bgr(cv2.imread(caminho))
+
+
+def processar_matriz_bgr(img_bgr):
+    """Gera variacoes RGB, HSV e histogramas a partir de uma matriz BGR."""
+    if img_bgr is None or img_bgr.size == 0:
         return None
 
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
