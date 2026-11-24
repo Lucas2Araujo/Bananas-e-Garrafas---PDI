@@ -8,6 +8,10 @@ from caracteristicas import extrair_todas_caracteristicas
 from componentes import PainelImagem
 from processamento import gerar_histograma_canal, processar_imagem, processar_matriz_bgr
 from segmentacao import aplicar_segmentacao, detectar_roi_yolo, segmentar_roi
+from validar_segmentacao import calcular_iou_dice
+from caracteristicas import extrair_vetor_caracteristicas
+from gerar_dataset_features import gerar_xy
+from treinar_rf import treinar, DATASET_DIR
 from visualizador import JanelaZoom
 from webcam import JanelaWebcam
 
@@ -31,6 +35,8 @@ class AnalisadorCoresApp:
         # Estado da Segmentação Clássica
         self.seg_img_fundo_bgr = None
         self.seg_img_objeto_bgr = None
+        self.seg_gt_mask = None
+        self.rf_modelo = None
         self.seg_resultados = {}
         self.seg_paineis = {}
 
@@ -127,12 +133,70 @@ class AnalisadorCoresApp:
         self.notebook.add(self.tab_caracteristicas, text="  4. Extração de Características  ")
         self._setup_aba_caracteristicas()
 
+        self.tab_classificacao = tk.Frame(self.notebook)
+        self.notebook.add(self.tab_classificacao, text="  5. Classificação (Random Forest)  ")
+        self._setup_aba_classificacao()
+
         self.lbl_status = tk.Label(
             self.frame_workspace,
             text="Passe o mouse sobre uma imagem para inspecionar pixels, 🔍 para Zoom, 📊 para Histograma ou ✂️ para Segmentar.",
             bd=1, relief=tk.SUNKEN, anchor=tk.W, font=("Consolas", 10), bg="#f0f0f0", padx=10, pady=5,
         )
         self.lbl_status.pack(side=tk.BOTTOM, fill=tk.X)
+
+        if os.path.exists(DATASET_DIR / "modelo_rf.pkl"):
+            import pickle
+            with open(DATASET_DIR / "modelo_rf.pkl", "rb") as f:
+                self.rf_modelo = pickle.load(f)
+
+    def _setup_aba_classificacao(self):
+        frame = tk.Frame(self.tab_classificacao, bg="#f5f5f5", padx=20, pady=20)
+        frame.pack(expand=True, fill="both")
+
+        tk.Button(
+            frame, text="1. Treinar Random Forest (K-Fold 5)",
+            command=self._treinar_rf_ui, font=("Arial", 10, "bold"),
+            bg="#2e7d32", fg="white", padx=12, pady=6,
+        ).pack(pady=(0, 10))
+
+        self.lbl_rf_status = tk.Label(
+            frame, text="Modelo: carregado" if self.rf_modelo else "Modelo: não treinado",
+            font=("Arial", 10), bg="#f5f5f5", fg="#333",
+        )
+        self.lbl_rf_status.pack(pady=(0, 20))
+
+        tk.Button(
+            frame, text="2. Classificar Imagem Atual (Otsu)",
+            command=self._classificar_atual_ui, font=("Arial", 10, "bold"),
+            bg="#1565c0", fg="white", padx=12, pady=6,
+        ).pack(pady=(0, 10))
+
+        self.lbl_rf_resultado = tk.Label(
+            frame, text="Resultado: —", font=("Arial", 14, "bold"), bg="#f5f5f5", fg="#111",
+        )
+        self.lbl_rf_resultado.pack(pady=10)
+
+    def _treinar_rf_ui(self):
+        npz = DATASET_DIR / "features_xy.npz"
+        if not npz.exists():
+            gerar_xy(npz)
+        self.rf_modelo, _, _ = treinar(npz)
+        self.lbl_rf_status.config(text="Modelo: treinado (K-Fold 5) e salvo em dataset/modelo_rf.pkl")
+
+    def _classificar_atual_ui(self):
+        if self.rf_modelo is None:
+            messagebox.showwarning("Aviso", "Treine o modelo primeiro.")
+            return
+        mask = self.seg_resultados.get("mask_otsu") if hasattr(self, "seg_resultados") else None
+        if self.seg_img_objeto_bgr is None or mask is None:
+            messagebox.showwarning("Aviso", "Carregue e segmente uma imagem na Aba 2 primeiro.")
+            return
+
+        x = extrair_vetor_caracteristicas(self.seg_img_objeto_bgr, mask).reshape(1, -1)
+        pred = int(self.rf_modelo.predict(x)[0])
+        prob = float(self.rf_modelo.predict_proba(x)[0][pred]) * 100.0
+        classe = "Banana (1)" if pred == 1 else "Garrafa (0)"
+        self.lbl_rf_resultado.config(text=f"Resultado: {classe} — {prob:.1f}%")
 
     def _entrar_workspace(self):
         if not self.workspace_ativo:
@@ -612,6 +676,12 @@ class AnalisadorCoresApp:
             command=self._atualizar_segmentacao, font=("Arial", 9, "bold"), bg="#f5f5f5",
         ).pack(side=tk.LEFT, padx=8)
 
+        self.lbl_seg_metricas = tk.Label(
+            self.tab_segmentacao, text="Métricas (GT): carregue uma imagem do dataset",
+            font=("Arial", 9, "bold"), fg="#333", bg="#eef2f5", pady=4,
+        )
+        self.lbl_seg_metricas.pack(fill=tk.X, padx=10, pady=(2, 0))
+
         self.seg_grid_frame = tk.Frame(self.tab_segmentacao)
         self.seg_grid_frame.pack(expand=True, fill="both", padx=10, pady=5)
 
@@ -675,8 +745,18 @@ class AnalisadorCoresApp:
             self.lbl_status.config(text=f"[Segmentação] Fundo carregado: {os.path.basename(caminho)}")
         else:
             self.seg_img_objeto_bgr = img
+            self.seg_gt_mask = self._carregar_gt_para_imagem(caminho)
             self.lbl_status.config(text=f"[Segmentação] Objeto carregado: {os.path.basename(caminho)}")
         self._atualizar_segmentacao()
+
+    def _carregar_gt_para_imagem(self, caminho):
+        stem = os.path.splitext(os.path.basename(caminho))[0]
+        masks_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "dataset", "masks")
+        for sub in ("organico", "reciclavel"):
+            gt_path = os.path.join(masks_dir, sub, f"{stem}.png")
+            if os.path.exists(gt_path):
+                return cv2.imread(gt_path, cv2.IMREAD_GRAYSCALE)
+        return None
 
     def _atualizar_segmentacao(self):
         if self.seg_img_objeto_bgr is None:
@@ -696,6 +776,18 @@ class AnalisadorCoresApp:
             matriz = self.seg_resultados.get(chave)
             if matriz is not None:
                 painel.atualizar_miniatura(matriz, thumb)
+
+        if self.seg_gt_mask is not None and self.seg_gt_mask.shape[:2] == self.seg_img_objeto_bgr.shape[:2]:
+            nomes = [("mask_otsu", "Otsu"), ("mask_adaptativa", "Adaptativa"), ("mask_watershed", "Watershed")]
+            partes = []
+            for ch, nome in nomes:
+                pred = self.seg_resultados.get(ch)
+                if pred is not None:
+                    iou, dice = calcular_iou_dice(pred, self.seg_gt_mask)
+                    partes.append(f"{nome}: IoU {iou:.3f} / Dice {dice:.3f}")
+            self.lbl_seg_metricas.config(text="Métricas (GT): " + "  |  ".join(partes))
+        else:
+            self.lbl_seg_metricas.config(text="Métricas (GT): sem máscara correspondente")
 
     def _abrir_zoom_seg(self, chave, titulo):
         matriz = self.seg_resultados.get(chave)
