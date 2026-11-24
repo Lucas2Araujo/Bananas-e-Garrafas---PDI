@@ -235,6 +235,12 @@ class AnalisadorCoresApp:
 
         ativos = self._extratores_ativos()
         x = extrair_vetor_caracteristicas(self.seg_img_objeto_bgr, mask, extratores=ativos).reshape(1, -1)
+        if x.shape[1] != self.rf_modelo.n_features_in_:
+            messagebox.showwarning(
+                "Aviso",
+                f"Os extratores atuais geram {x.shape[1]} features, mas o modelo foi treinado com {self.rf_modelo.n_features_in_}.\nClique em '1. Treinar Random Forest' primeiro.",
+            )
+            return
         pred = int(self.rf_modelo.predict(x)[0])
         prob = float(self.rf_modelo.predict_proba(x)[0][pred]) * 100.0
         classe = "Banana (1)" if pred == 1 else "Garrafa (0)"
@@ -467,10 +473,10 @@ class AnalisadorCoresApp:
         if destino == "ind":
             for k in ("bgr", "rgb"):
                 if k in self.paineis_ind:
-                    self.paineis_ind[k].lbl_titulo.config(text=f"Original (RGB) — {os.path.basename(caminho)}")
+                    self.paineis_ind[k].lbl_titulo.config(text=f"Original (RGB) — {os.path.basename(nome_base)}")
                     break
             self.seg_img_objeto_bgr = variacoes["bgr"]
-            self.seg_gt_mask = self._carregar_gt_para_imagem(caminho)
+            self.seg_gt_mask = self._carregar_gt_para_imagem(nome_base)
             self.grabcut_img_bgr = variacoes["bgr"]
             self.grabcut_rect = None
             self.grabcut_resultados = {}
