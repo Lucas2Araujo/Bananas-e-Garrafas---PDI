@@ -37,6 +37,12 @@ class AnalisadorCoresApp:
         self.seg_img_objeto_bgr = None
         self.seg_gt_mask = None
         self.rf_modelo = None
+        self.rf_extratores_vars = {
+            "chain": tk.BooleanVar(value=True),
+            "lbp": tk.BooleanVar(value=True),
+            "hu": tk.BooleanVar(value=False),
+            "haralick": tk.BooleanVar(value=False),
+        }
         self.seg_resultados = {}
         self.seg_paineis = {}
 
@@ -137,6 +143,8 @@ class AnalisadorCoresApp:
         self.notebook.add(self.tab_classificacao, text="  5. Classificação (Random Forest)  ")
         self._setup_aba_classificacao()
 
+        self.notebook.bind("<<NotebookTabChanged>>", self._ao_trocar_aba)
+
         self.lbl_status = tk.Label(
             self.frame_workspace,
             text="Passe o mouse sobre uma imagem para inspecionar pixels, 🔍 para Zoom, 📊 para Histograma ou ✂️ para Segmentar.",
@@ -163,7 +171,13 @@ class AnalisadorCoresApp:
             frame, text="Modelo: carregado" if self.rf_modelo else "Modelo: não treinado",
             font=("Arial", 10), bg="#f5f5f5", fg="#333",
         )
-        self.lbl_rf_status.pack(pady=(0, 20))
+        self.lbl_rf_status.pack(pady=(0, 5))
+
+        self.lbl_rf_extratores = tk.Label(
+            frame, text="Extratores selecionados (Aba 4): chain, lbp",
+            font=("Arial", 9, "italic"), bg="#f5f5f5", fg="#555",
+        )
+        self.lbl_rf_extratores.pack(pady=(0, 15))
 
         tk.Button(
             frame, text="2. Classificar Imagem Atual (Otsu)",
@@ -172,16 +186,43 @@ class AnalisadorCoresApp:
         ).pack(pady=(0, 10))
 
         self.lbl_rf_resultado = tk.Label(
-            frame, text="Resultado: —", font=("Arial", 14, "bold"), bg="#f5f5f5", fg="#111",
+            frame, text="Resultado: —", font=("Arial", 16, "bold"), bg="#f5f5f5", fg="#111",
         )
         self.lbl_rf_resultado.pack(pady=10)
 
+        self.lbl_rf_img = tk.Label(frame, bg="#e0e0e0", text="Nenhuma imagem classificada", width=420, height=280)
+        self.lbl_rf_img.pack(pady=10)
+
+    def _ao_trocar_aba(self, _event=None):
+        if self.seg_img_objeto_bgr is None and self.dados_imagens.get("ind"):
+            ind = self.dados_imagens["ind"]
+            self.seg_img_objeto_bgr = ind["variacoes"]["bgr"]
+            self.grabcut_img_bgr = ind["variacoes"]["bgr"]
+            caminho = ind.get("caminho") or ind.get("nome", "")
+            self.seg_gt_mask = self._carregar_gt_para_imagem(caminho) if caminho else None
+
+        aba = self.notebook.select()
+        if aba == str(self.tab_segmentacao) and self.seg_img_objeto_bgr is not None:
+            self._atualizar_segmentacao()
+        elif aba == str(self.tab_grabcut) and self.grabcut_img_bgr is not None:
+            if "original" in self.grabcut_paineis:
+                self.grabcut_paineis["original"].atualizar_miniatura(self.grabcut_img_bgr, (380, 260))
+
+    def _extratores_ativos(self):
+        ativos = tuple(k for k, v in self.rf_extratores_vars.items() if v.get())
+        return ativos if ativos else ("chain", "lbp")
+
+    def _atualizar_aviso_extratores(self):
+        ativos = self._extratores_ativos()
+        self.lbl_rf_extratores.config(text=f"Extratores selecionados (Aba 4): {', '.join(ativos)}")
+
     def _treinar_rf_ui(self):
+        ativos = self._extratores_ativos()
         npz = DATASET_DIR / "features_xy.npz"
-        if not npz.exists():
-            gerar_xy(npz)
+        gerar_xy(npz, extratores=ativos)
         self.rf_modelo, _, _ = treinar(npz)
-        self.lbl_rf_status.config(text="Modelo: treinado (K-Fold 5) e salvo em dataset/modelo_rf.pkl")
+        self.lbl_rf_status.config(text=f"Modelo: treinado ({', '.join(ativos)}) e salvo em dataset/modelo_rf.pkl")
+        self._atualizar_aviso_extratores()
 
     def _classificar_atual_ui(self):
         if self.rf_modelo is None:
@@ -192,11 +233,20 @@ class AnalisadorCoresApp:
             messagebox.showwarning("Aviso", "Carregue e segmente uma imagem na Aba 2 primeiro.")
             return
 
-        x = extrair_vetor_caracteristicas(self.seg_img_objeto_bgr, mask).reshape(1, -1)
+        ativos = self._extratores_ativos()
+        x = extrair_vetor_caracteristicas(self.seg_img_objeto_bgr, mask, extratores=ativos).reshape(1, -1)
         pred = int(self.rf_modelo.predict(x)[0])
         prob = float(self.rf_modelo.predict_proba(x)[0][pred]) * 100.0
         classe = "Banana (1)" if pred == 1 else "Garrafa (0)"
-        self.lbl_rf_resultado.config(text=f"Resultado: {classe} — {prob:.1f}%")
+        cor = "#b8860b" if pred == 1 else "#1565c0"
+        self.lbl_rf_resultado.config(text=f"Resultado: {classe} — {prob:.1f}%", fg=cor)
+
+        vis = cv2.bitwise_and(self.seg_img_objeto_bgr, self.seg_img_objeto_bgr, mask=mask)
+        vis_rgb = cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)
+        img_pil = Image.fromarray(vis_rgb)
+        img_pil.thumbnail((420, 280), Image.Resampling.LANCZOS)
+        self._rf_photo = ImageTk.PhotoImage(img_pil)
+        self.lbl_rf_img.config(image=self._rf_photo, text="")
 
     def _entrar_workspace(self):
         if not self.workspace_ativo:
@@ -415,7 +465,12 @@ class AnalisadorCoresApp:
         self._atualizar_paineis(destino)
 
         if destino == "ind":
+            for k in ("bgr", "rgb"):
+                if k in self.paineis_ind:
+                    self.paineis_ind[k].lbl_titulo.config(text=f"Original (RGB) — {os.path.basename(caminho)}")
+                    break
             self.seg_img_objeto_bgr = variacoes["bgr"]
+            self.seg_gt_mask = self._carregar_gt_para_imagem(caminho)
             self.grabcut_img_bgr = variacoes["bgr"]
             self.grabcut_rect = None
             self.grabcut_resultados = {}
@@ -545,6 +600,8 @@ class AnalisadorCoresApp:
 
         mapa_canal = {"r": "R", "g": "G", "b": "B", "h": "H", "s": "S", "v": "V"}
         self.seg_img_objeto_bgr = self.dados_imagens[chave_origem]["variacoes"]["bgr"]
+        caminho_origem = self.dados_imagens[chave_origem].get("caminho") or self.dados_imagens[chave_origem].get("nome", "")
+        self.seg_gt_mask = self._carregar_gt_para_imagem(caminho_origem) if caminho_origem else None
         self.seg_canal_var.set(mapa_canal.get(chave_var, "GRAY"))
         self.notebook.select(self.tab_segmentacao)
         self._atualizar_segmentacao()
@@ -745,6 +802,8 @@ class AnalisadorCoresApp:
             self.lbl_status.config(text=f"[Segmentação] Fundo carregado: {os.path.basename(caminho)}")
         else:
             self.seg_img_objeto_bgr = img
+            self.grabcut_img_bgr = img
+            self.grabcut_rect = None
             self.seg_gt_mask = self._carregar_gt_para_imagem(caminho)
             self.lbl_status.config(text=f"[Segmentação] Objeto carregado: {os.path.basename(caminho)}")
         self._atualizar_segmentacao()
@@ -918,7 +977,10 @@ class AnalisadorCoresApp:
             messagebox.showerror("Erro", "Não foi possível carregar a imagem.")
             return
         self.grabcut_img_bgr = img
+        self.seg_img_objeto_bgr = img
+        self.seg_gt_mask = self._carregar_gt_para_imagem(caminho)
         self.grabcut_rect = None
+        self._atualizar_segmentacao()
         self._executar_yolo_grabcut()
 
     def _executar_yolo_grabcut(self):
@@ -1219,6 +1281,14 @@ class AnalisadorCoresApp:
     # ABA 4: EXTRAÇÃO DE CARACTERÍSTICAS (FORMA & TEXTURA)
     # =========================================================================
     def _setup_aba_caracteristicas(self):
+        barra_ext = tk.Frame(self.tab_caracteristicas, bg="#eef2f5", pady=4)
+        barra_ext.pack(fill=tk.X, padx=10, pady=(4, 0))
+        tk.Label(barra_ext, text="Extratores para Random Forest:", font=("Arial", 9, "bold"), bg="#eef2f5").pack(side=tk.LEFT, padx=(6, 8))
+        for chave, rotulo in [("chain", "Chain Code (19)"), ("lbp", "LBP 10-bins (10)"), ("hu", "Momentos de Hu (7)"), ("haralick", "Haralick/GLCM (4)")]:
+            tk.Checkbutton(
+                barra_ext, text=rotulo, variable=self.rf_extratores_vars[chave],
+                command=self._atualizar_aviso_extratores, bg="#eef2f5", font=("Arial", 9),
+            ).pack(side=tk.LEFT, padx=6)
         topo = tk.Frame(self.tab_caracteristicas)
         topo.pack(pady=6, fill=tk.X, padx=10)
 

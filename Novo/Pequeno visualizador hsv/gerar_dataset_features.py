@@ -9,8 +9,8 @@ CLASSES = [("reciclavel", 0), ("organico", 1)]  # 0 = garrafa, 1 = banana
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
-def gerar_xy(saida_npz: Path = DATASET_DIR / "features_xy.npz") -> tuple[np.ndarray, np.ndarray]:
-    """Extrai x = [v_chain_code, v_LBP] (29 dims) e y para todas as imagens rotuladas."""
+def gerar_xy(saida_npz: Path = DATASET_DIR / "features_xy.npz", extratores=("chain", "lbp")) -> tuple[np.ndarray, np.ndarray]:
+    """Extrai vetor combinado dos extratores selecionados e y para todas as imagens rotuladas."""
     X_list, y_list = [], []
 
     for sub, label in CLASSES:
@@ -28,12 +28,12 @@ def gerar_xy(saida_npz: Path = DATASET_DIR / "features_xy.npz") -> tuple[np.ndar
             if img is None or mask is None:
                 continue
 
-            X_list.append(extrair_vetor_caracteristicas(img, mask))
+            X_list.append(extrair_vetor_caracteristicas(img, mask, extratores=extratores))
             y_list.append(label)
 
-    X = np.vstack(X_list).astype(np.float32) if X_list else np.empty((0, 29), dtype=np.float32)
+    X = np.vstack(X_list).astype(np.float32) if X_list else np.empty((0, 0), dtype=np.float32)
     y = np.array(y_list, dtype=np.int64)
-    np.savez(saida_npz, X=X, y=y)
+    np.savez(saida_npz, X=X, y=y, extratores=np.array(list(extratores)))
     print(f"Salvo {saida_npz}: X={X.shape}, y={y.shape} (garrafa=0: {(y == 0).sum()}, banana=1: {(y == 1).sum()})")
     return X, y
 

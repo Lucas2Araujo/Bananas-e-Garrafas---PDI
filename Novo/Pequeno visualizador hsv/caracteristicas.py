@@ -276,40 +276,53 @@ def _lbp_uniforme_10bins(img_gray_mascarada, mask_binaria):
     return hist / soma if soma > 0 else hist
 
 
-def extrair_vetor_caracteristicas(img_bgr, mask_binaria):
+def extrair_vetor_caracteristicas(img_bgr, mask_binaria, extratores=("chain", "lbp")):
     """
-    Retorna vetor fixo x = [v_chain_code (19), v_LBP (10)] (29 dims, float32):
-      - 8 bins: histograma normalizado de direções (0..7)
-      - 8 bins: histograma normalizado da 1ª diferença ((d[i+1] - d[i]) % 8)
-      - 3 escalares: comprimento da cadeia, razão perímetro/área, compacidade (P² / 4πA)
-      - 10 bins: LBP uniforme invariante à rotação (P=8, R=1) normalizado
+    Retorna vetor fixo concatenando os extratores selecionados:
+      - "chain": 8 dirs + 8 diff1 + 3 escalares (19 dims)
+      - "lbp": LBP uniforme 10 bins (10 dims)
+      - "hu": 7 Momentos de Hu em escala log (7 dims)
+      - "haralick": 4 propriedades GLCM (4 dims)
     """
     bif = aplicar_bifurcacao(img_bgr, mask_binaria)
+    partes = []
     if bif is None:
-        return np.zeros(29, dtype=np.float32)
+        dims = {"chain": 19, "lbp": 10, "hu": 7, "haralick": 4}
+        return np.zeros(sum(dims[e] for e in extratores), dtype=np.float32)
 
-    cadeia = extrair_codigo_cadeia(bif["entrada_forma"])
-    seq = cadeia["sequencia"]
+    if "chain" in extratores:
+        cadeia = extrair_codigo_cadeia(bif["entrada_forma"])
+        seq = cadeia["sequencia"]
 
-    hist_dir = np.array(cadeia["histograma"], dtype=np.float32)
-    if hist_dir.sum() > 0:
-        hist_dir /= hist_dir.sum()
+        hist_dir = np.array(cadeia["histograma"], dtype=np.float32)
+        if hist_dir.sum() > 0:
+            hist_dir /= hist_dir.sum()
 
-    if len(seq) > 1:
-        seq_arr = np.asarray(seq, dtype=np.int32)
-        diff1 = (np.roll(seq_arr, -1) - seq_arr) % 8
-        hist_diff, _ = np.histogram(diff1, bins=8, range=(0, 8))
-        hist_diff = hist_diff.astype(np.float32)
-        if hist_diff.sum() > 0:
-            hist_diff /= hist_diff.sum()
-    else:
-        hist_diff = np.zeros(8, dtype=np.float32)
+        if len(seq) > 1:
+            seq_arr = np.asarray(seq, dtype=np.int32)
+            diff1 = (np.roll(seq_arr, -1) - seq_arr) % 8
+            hist_diff, _ = np.histogram(diff1, bins=8, range=(0, 8))
+            hist_diff = hist_diff.astype(np.float32)
+            if hist_diff.sum() > 0:
+                hist_diff /= hist_diff.sum()
+        else:
+            hist_diff = np.zeros(8, dtype=np.float32)
 
-    comprimento = float(len(seq))
-    area = float(np.count_nonzero(bif["entrada_forma"]))
-    razao_pa = comprimento / area if area > 0 else 0.0
-    compacidade = (comprimento ** 2) / (4.0 * np.pi * area) if area > 0 else 0.0
-    escalares = np.array([comprimento, razao_pa, compacidade], dtype=np.float32)
+        comprimento = float(len(seq))
+        area = float(np.count_nonzero(bif["entrada_forma"]))
+        razao_pa = comprimento / area if area > 0 else 0.0
+        compacidade = (comprimento ** 2) / (4.0 * np.pi * area) if area > 0 else 0.0
+        partes.extend([hist_dir, hist_diff, np.array([comprimento, razao_pa, compacidade], dtype=np.float32)])
 
-    v_lbp = _lbp_uniforme_10bins(bif["entrada_textura"], bif["entrada_forma"])
-    return np.concatenate([hist_dir, hist_diff, escalares, v_lbp]).astype(np.float32)
+    if "lbp" in extratores:
+        partes.append(_lbp_uniforme_10bins(bif["entrada_textura"], bif["entrada_forma"]))
+
+    if "hu" in extratores:
+        hu_log = extrair_momentos_hu(bif["entrada_forma"])["log"]
+        partes.append(np.array(hu_log, dtype=np.float32))
+
+    if "haralick" in extratores:
+        m = extrair_haralick_glcm(bif["entrada_textura"], bif["entrada_forma"])["metricas"]
+        partes.append(np.array([m["Contraste"], m["Homogeneidade"], m["Energia"], m["Correlacao"]], dtype=np.float32))
+
+    return np.concatenate(partes).astype(np.float32) if partes else np.zeros(0, dtype=np.float32)
